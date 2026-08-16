@@ -1,5 +1,7 @@
 "use client";
 
+import MaterialsTab from '@/components/materials/MaterialsTab';
+import AssistantsTab from '@/components/assistants/AssistantsTab';
 import { useState, useEffect, useRef } from "react";
 import { supabase } from "../lib/supabaseClient";
 import toast from "react-hot-toast";
@@ -93,10 +95,6 @@ export default function Dashboard() {
   const [signupConfirm, setSignupConfirm] = useState("");
 
   // Assistant Management States
-  const [preAuthorizedAssistants, setPreAuthorizedAssistants] = useState<any[]>([]);
-  const [assistantForm, setAssistantForm] = useState({ name: '', phone: '' });
-  const [isSubmittingAssistant, setIsSubmittingAssistant] = useState(false);
-  const [isLoadingAssistants, setIsLoadingAssistants] = useState(true);
 
   // PWA & Cloud Backup States
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
@@ -105,6 +103,17 @@ export default function Dashboard() {
   const [isClearDataModalOpen, setIsClearDataModalOpen] = useState(false);
   const [clearConfirmText, setClearConfirmText] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Notifications State
+  const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [notifications, setNotifications] = useState<Array<{
+    id: string;
+    title: string;
+    message: string;
+    type: 'info' | 'success' | 'warning' | 'payment';
+    date: string;
+    read: boolean;
+  }>>([]);
 
   // Authentication & Session Management
   useEffect(() => {
@@ -290,7 +299,7 @@ export default function Dashboard() {
 
       if (profile) {
         setUserRole(profile.role);
-        setTeacherId(profile.role === 'teacher' ? userId : profile.teacher_id);
+        setTeacherId((profile.role === 'teacher' || profile.role === 'super_admin') ? userId : profile.teacher_id);
         setTeacherName(profile.full_name || "");
         setTeacherPhone(profile.phone || "");
         setTeacherPlan(profile.subscription_plan || "monthly");
@@ -497,35 +506,34 @@ export default function Dashboard() {
     await supabase.auth.signOut();
   };
 
+  // Calculate today's schedule
+  const getTodaySchedule = () => {
+    const today = new Date();
+    const daysOfWeek = ['الأحد', 'الاثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت'];
+    const todayName = daysOfWeek[today.getDay()];
+
+    const todayClasses = groups.filter(group =>
+      group.schedules && group.schedules.some(schedule => schedule.day === todayName)
+    ).map(group => ({
+      ...group,
+      todaySchedules: group.schedules?.filter(s => s.day === todayName) || []
+    }));
+
+    return { todayName, todayClasses };
+  };
+
   useEffect(() => {
     if (userRole === 'assistant' && activeTab === 'المالية') {
       setActiveTab('الرئيسية');
     }
   }, [userRole, activeTab]);
 
-  // Fetch Pre-Authorized Assistants
-  useEffect(() => {
-    if (!teacherId || userRole !== 'teacher') return;
-    const fetchAssistants = async () => {
-      setIsLoadingAssistants(true);
-      const { data, error } = await supabase
-        .from('pre_authorized_assistants')
-        .select('*')
-        .eq('teacher_id', teacherId)
-        .order('created_at', { ascending: false });
-      if (error && error.code !== '42P01') { 
-        console.error("فشل في تحميل المساعدين", error);
-      } else {
-        setPreAuthorizedAssistants(data || []);
-      }
-      setIsLoadingAssistants(false);
-    };
-    fetchAssistants();
-  }, [teacherId, userRole]);
   const [isGroupModalOpen, setIsGroupModalOpen] = useState(false);
   const [isPrivateModalOpen, setIsPrivateModalOpen] = useState(false);
   const [isAddStudentModalOpen, setIsAddStudentModalOpen] = useState(false);
   const [activeGroupFilter, setActiveGroupFilter] = useState("الكل");
+  const [groupSearchQuery, setGroupSearchQuery] = useState("");
+  const [studentSearchQuery, setStudentSearchQuery] = useState("");
   const [scheduleView, setScheduleView] = useState<"احترافي" | "تقليدي">("احترافي");
 
   const [selectedStudent, setSelectedStudent] = useState<Student | null>(null);
@@ -679,6 +687,55 @@ export default function Dashboard() {
     const savedTemplate = localStorage.getItem('whatsapp_custom_template');
     if (savedTemplate) setCustomWhatsappTemplate(savedTemplate);
   }, []);
+
+  // Generate notifications based on payments
+  useEffect(() => {
+    if (!students.length || !groups.length || !payments.length) return;
+
+    const today = new Date();
+    const currentMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`;
+
+    const newNotifications: Array<{
+      id: string;
+      title: string;
+      message: string;
+      type: 'info' | 'success' | 'warning' | 'payment';
+      date: string;
+      read: boolean;
+    }> = [];
+
+    // Check for unpaid students this month
+    students.forEach(student => {
+      const group = groups.find(g => g.id === student.group_id);
+      const paymentRecord = payments.find(p => p.student_id === student.id && p.month === currentMonth);
+
+      if (!paymentRecord || paymentRecord.status !== 'مدفوع') {
+        newNotifications.push({
+          id: `payment-${student.id}-${currentMonth}`,
+          title: 'تنبيه دفع متأخر',
+          message: `الطالب ${student.full_name} في ${group?.name || 'مجموعة'} - لم يدفع هذا الشهر`,
+          type: 'payment',
+          date: today.toISOString(),
+          read: false
+        });
+      }
+    });
+
+    // Add today's schedule notification
+    const todaySchedule = getTodaySchedule();
+    if (todaySchedule.todayClasses.length > 0) {
+      newNotifications.push({
+        id: `schedule-${today.toDateString()}`,
+        title: 'حصص اليوم',
+        message: `لديك ${todaySchedule.todayClasses.length} حصة اليوم (${todaySchedule.todayName})`,
+        type: 'info',
+        date: today.toISOString(),
+        read: false
+      });
+    }
+
+    setNotifications(newNotifications);
+  }, [students, groups, payments]);
 
   // --- Financial Engine Analytics ---
   // Filter students based on financialGroupType and financialGroup
@@ -920,61 +977,37 @@ export default function Dashboard() {
   const [materialForm, setMaterialForm] = useState({ name: '', group_id: '', cost: '', price: '' });
   const [isSubmittingMaterial, setIsSubmittingMaterial] = useState(false);
   
-  const handleSaveMaterial = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!materialForm.name || !materialForm.group_id) return toast.error("يرجى إدخال اسم الملزمة والمجموعة");
-    
-    setIsSubmittingMaterial(true);
-    const payload = {
-      name: materialForm.name,
-      group_id: materialForm.group_id,
-      cost: Number(materialForm.cost) || 0,
-      price: Number(materialForm.price) || 0
-    };
-    
-    const { data, error } = await supabase.from('materials').insert([{ ...payload, teacher_id: teacherId }]).select();
-    setIsSubmittingMaterial(false);
-    
-    if (error) {
-      console.error("Insert Material Error Details:", error?.message, error?.details, error?.hint);
-      toast.error("فشل في إضافة الملزمة");
-    } else if (data) {
-      setMaterials(prev => [data[0], ...prev]);
-      setMaterialForm({ name: '', group_id: '', cost: '', price: '' });
-      toast.success("تم إضافة الملزمة بنجاح");
-    }
-  };
 
-  const handleToggleMaterialDistribution = async (materialId: string, studentId: string, isDelivered: boolean) => {
-    const toastId = toast.loading("جاري التحديث...");
-    try {
-      if (isDelivered) {
-        // Delete record
-        const dist = materialDistributions.find(d => d.material_id === materialId && d.student_id === studentId);
-        if (dist) {
-          const { error } = await supabase.from('material_distributions').delete().eq('id', dist.id);
-          if (error) throw error;
-          setMaterialDistributions(prev => prev.filter(d => d.id !== dist.id));
-        }
-      } else {
-        // Insert record
-        const payload = { material_id: materialId, student_id: studentId, status: 'تم التسليم' };
-        const { data, error } = await supabase.from('material_distributions').insert([{ ...payload, teacher_id: teacherId }]).select();
-        if (error) throw error;
-        if (data) setMaterialDistributions(prev => [...prev, data[0]]);
-      }
-      toast.success("تم التحديث", { id: toastId });
-    } catch (err) {
-      console.error(err);
-      toast.error("حدث خطأ أثناء التحديث", { id: toastId });
-    }
-  };
 
   const handlePrintCertificate = (student: Student, exam: any) => {
     const group = groups.find(g => g.id === student.group_id);
-    const date = new Date().toLocaleDateString('ar-EG');
-    const scorePercentage = (Number(exam.score) / Number(exam.total_score)) * 100;
-    
+    const formatArabicDate = (value: string | Date) => {
+      const parsedDate = new Date(value);
+      if (Number.isNaN(parsedDate.getTime())) return String(value);
+      return new Intl.DateTimeFormat('ar-EG', {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric'
+      }).format(parsedDate);
+    };
+    const date = formatArabicDate(new Date());
+    const examDate = exam.exam_date ? formatArabicDate(exam.exam_date) : date;
+    const examName = exam.exam_name || exam.name || 'الامتحان';
+    const score = Number(exam.score);
+    const totalScore = Number(exam.total_score);
+    const normalizedScore = Number.isFinite(score) ? score : 0;
+    const normalizedTotalScore = Number.isFinite(totalScore) ? totalScore : 0;
+    const scorePercentage = normalizedTotalScore > 0
+      ? (normalizedScore / normalizedTotalScore) * 100
+      : 0;
+    const teacherDisplayName = teacherName.trim() || 'المعلم المعتمد';
+    const escapeHtml = (value: unknown) => String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+
     let appreciationWord = "تقدير ممتاز";
     if (scorePercentage < 85 && scorePercentage >= 75) appreciationWord = "تقدير جيد جداً";
     else if (scorePercentage < 75 && scorePercentage >= 65) appreciationWord = "تقدير جيد";
@@ -985,60 +1018,79 @@ export default function Dashboard() {
       <html dir="rtl" lang="ar">
       <head>
         <meta charset="utf-8">
-        <title>شهادة تقدير - ${student.full_name}</title>
+        <title>شهادة تقدير - ${escapeHtml(student.full_name)}</title>
         <style>
-          @import url('https://fonts.googleapis.com/css2?family=Aref+Ruqaa:wght@400;700&family=Cairo:wght@400;700;900&display=swap');
+          @import url('https://fonts.googleapis.com/css2?family=Aref+Ruqaa:wght@400;700&family=Cairo:wght@400;600;700;900&display=swap');
+          * { box-sizing: border-box; }
           body {
-            margin: 0; padding: 0; background: #fff;
+            margin: 0; padding: 0; background: #e7e3da;
             display: flex; justify-content: center; align-items: center;
-            height: 100vh;
+            min-height: 100vh;
             font-family: 'Cairo', sans-serif;
             -webkit-print-color-adjust: exact !important;
             print-color-adjust: exact !important;
           }
           .certificate {
-            width: 1000px; height: 700px;
+            width: min(1400px, calc(100vw - 32px));
+            aspect-ratio: 297 / 210;
             position: relative;
-            background: linear-gradient(135deg, #f8f9fa 0%, #e2e8f0 100%);
-            border: 15px solid #231545;
-            outline: 5px solid #d4af37;
-            outline-offset: -25px;
-            box-shadow: inset 0 0 0 10px #fff;
-            padding: 50px; text-align: center;
+            overflow: hidden;
+            background: #fbfaf6;
+            border: 12px solid #9a7520;
+            box-shadow: inset 0 0 0 4px #f6e6a8, inset 0 0 0 14px #fbfaf6, 0 20px 50px rgba(39, 32, 20, 0.18);
+            padding: 58px 92px 52px;
+            text-align: center;
             display: flex; flex-direction: column; justify-content: center;
-            box-sizing: border-box;
+          }
+          .certificate::before {
+            content: "";
+            position: absolute;
+            inset: 23px;
+            border: 2px solid #c6a34a;
+            pointer-events: none;
+          }
+          .certificate::after {
+            content: "";
+            position: absolute;
+            inset: 32px;
+            border: 1px solid rgba(154, 117, 32, 0.45);
+            pointer-events: none;
           }
           .corner-tl, .corner-tr, .corner-bl, .corner-br {
-            position: absolute; width: 100px; height: 100px;
-            border: 5px solid #d4af37;
+            position: absolute; width: 86px; height: 86px;
+            border: 4px solid #c6a34a;
+            z-index: 1;
           }
-          .corner-tl { top: 25px; left: 25px; border-right: none; border-bottom: none; }
-          .corner-tr { top: 25px; right: 25px; border-left: none; border-bottom: none; }
-          .corner-bl { bottom: 25px; left: 25px; border-right: none; border-top: none; }
-          .corner-br { bottom: 25px; right: 25px; border-left: none; border-top: none; }
-          
+          .corner-tl { top: 38px; left: 38px; border-right: none; border-bottom: none; }
+          .corner-tr { top: 38px; right: 38px; border-left: none; border-bottom: none; }
+          .corner-bl { bottom: 38px; left: 38px; border-right: none; border-top: none; }
+          .corner-br { bottom: 38px; right: 38px; border-left: none; border-top: none; }
           .ribbon {
-            width: 100px; height: 100px; margin: 0 auto 20px;
-            background: #d4af37; border-radius: 50%;
+            width: 76px; height: 76px; margin: 0 auto 12px;
+            background: #9a7520; border: 5px solid #f6e6a8; border-radius: 50%;
             display: flex; justify-content: center; align-items: center;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
-            color: #231545; font-size: 40px;
+            box-shadow: 0 0 0 2px #9a7520, 0 8px 18px rgba(39, 32, 20, 0.18);
+            color: #fff8d7; font-size: 34px; z-index: 2;
           }
-          .title { font-family: 'Aref Ruqaa', serif; font-size: 60px; color: #231545; margin: 0 0 30px; text-shadow: 2px 2px 4px rgba(0,0,0,0.1); }
-          .subtitle { font-size: 24px; color: #4b5563; margin-bottom: 20px; }
-          .student-name { font-size: 48px; font-weight: 900; color: #111827; margin: 10px 0 30px; border-bottom: 2px dashed #d4af37; display: inline-block; padding: 0 40px; }
-          .details { font-size: 22px; color: #374151; line-height: 1.8; max-width: 800px; margin: 0 auto; }
-          .highlight { color: #231545; font-weight: bold; }
-          
-          .footer { display: flex; justify-content: space-between; margin-top: 60px; padding: 0 50px; }
+          .eyebrow { color: #9a7520; font-size: 15px; font-weight: 700; letter-spacing: 1px; margin-bottom: 2px; }
+          .title { font-family: 'Aref Ruqaa', serif; font-size: 54px; color: #26354a; margin: 0 0 12px; line-height: 1.25; }
+          .title-rule { width: 250px; height: 3px; background: #c6a34a; margin: 0 auto 18px; }
+          .subtitle { font-size: 19px; color: #5c6570; margin-bottom: 8px; }
+          .student-name { font-size: 43px; font-weight: 900; color: #26354a; margin: 0 0 15px; border-bottom: 2px solid #c6a34a; display: inline-block; padding: 0 48px 5px; }
+          .details { font-size: 19px; color: #4a515a; line-height: 1.9; max-width: 900px; margin: 0 auto; }
+          .highlight { color: #9a7520; font-weight: 800; }
+          .meta { display: flex; justify-content: center; gap: 46px; margin: 15px auto 0; color: #69727b; font-size: 14px; }
+          .meta strong { color: #26354a; }
+          .footer { display: flex; justify-content: space-between; margin-top: 26px; padding: 0 66px; }
           .sig-box { text-align: center; }
-          .sig-line { width: 200px; height: 2px; background: #111827; margin: 10px auto; }
-          .sig-text { font-size: 18px; font-weight: bold; color: #4b5563; }
-          
+          .sig-line { width: 210px; height: 1px; background: #9a7520; margin: 8px auto 5px; }
+          .sig-text { font-size: 14px; font-weight: 700; color: #69727b; }
+          .signature { font-family: 'Aref Ruqaa', serif; font-size: 26px; color: #26354a; min-height: 35px; }
           @media print {
             @page { size: A4 landscape; margin: 0; }
+            html, body { width: 297mm; height: 210mm; }
             body { padding: 0; background: none; }
-            .certificate { border: none; box-shadow: none; width: 100vw; height: 100vh; }
+            .certificate { width: 297mm; height: 210mm; border: 12px solid #9a7520; box-shadow: inset 0 0 0 4px #f6e6a8, inset 0 0 0 14px #fbfaf6; }
           }
         </style>
       </head>
@@ -1046,29 +1098,35 @@ export default function Dashboard() {
         <div class="certificate">
           <div class="corner-tl"></div><div class="corner-tr"></div>
           <div class="corner-bl"></div><div class="corner-br"></div>
-          
           <div class="ribbon">★</div>
+          <div class="eyebrow">منصة معلمي لإدارة السناتر التعليمية</div>
           <h1 class="title">شهادة تقدير وتفوق</h1>
+          <div class="title-rule"></div>
           <div class="subtitle">يمنح هذا التكريم بكل فخر واعتزاز إلى الطالب/ة:</div>
-          <div class="student-name">${student.full_name}</div>
-          
+          <div class="student-name">${escapeHtml(student.full_name)}</div>
           <div class="details">
-            نظراً لجهوده/ا المتميزة وتفوقه/ا في <span class="highlight">امتحان ${exam.name}</span> 
-            وحصوله/ا على درجة <span class="highlight">${exam.score} / ${exam.total_score}</span> (${appreciationWord}) 
-            في مادة <span class="highlight">${group?.subject || 'العلوم'}</span>.
-            <br/><br/>مع تمنياتنا بدوام النجاح والتوفيق.
+            تقديراً لجهوده/ا المتميزة وتفوقه/ا في
+            <span class="highlight">امتحان ${escapeHtml(examName)}</span>
+            وحصوله/ا على درجة
+            <span class="highlight">${escapeHtml(normalizedScore)} / ${escapeHtml(normalizedTotalScore)}</span>
+            <span class="highlight">(${escapeHtml(appreciationWord)})</span>
+            في مادة <span class="highlight">${escapeHtml(group?.subject || 'غير محددة')}</span>.
+            <br/>مع تمنياتنا بدوام النجاح والتوفيق.
           </div>
-          
+          <div class="meta">
+            <span>المجموعة: <strong>${escapeHtml(group?.name || 'غير محددة')}</strong></span>
+            <span>تاريخ الامتحان: <strong>${escapeHtml(examDate)}</strong></span>
+          </div>
           <div class="footer">
             <div class="sig-box">
               <div class="sig-text">التاريخ</div>
               <div class="sig-line"></div>
-              <div style="font-family: 'Aref Ruqaa', serif; font-size: 24px; color: #231545;">${date}</div>
+              <div class="signature">${escapeHtml(date)}</div>
             </div>
             <div class="sig-box">
               <div class="sig-text">توقيع المعلم</div>
               <div class="sig-line"></div>
-              <div style="font-family: 'Aref Ruqaa', serif; font-size: 32px; color: #d4af37;">معلم المادة</div>
+              <div class="signature">${escapeHtml(teacherDisplayName)}</div>
             </div>
           </div>
         </div>
@@ -1079,21 +1137,19 @@ export default function Dashboard() {
     const iframe = document.createElement('iframe');
     iframe.style.display = 'none';
     document.body.appendChild(iframe);
-    
     const contentDoc = iframe.contentDocument || iframe.contentWindow?.document;
     if (contentDoc) {
       contentDoc.open();
       contentDoc.write(htmlContent);
       contentDoc.close();
     }
-    
     setTimeout(() => {
       if (iframe.contentWindow) {
         iframe.contentWindow.focus();
         iframe.contentWindow.print();
       }
       setTimeout(() => {
-        document.body.removeChild(iframe);
+        if (document.body.contains(iframe)) document.body.removeChild(iframe);
       }, 2000);
     }, 500);
   };
@@ -1970,12 +2026,21 @@ export default function Dashboard() {
   ];
 
   const filteredGroups = groups.filter(group => {
-    if (activeGroupFilter === "الكل") return true;
-    if (activeGroupFilter === "أونلاين") return group.type === "online";
-    if (activeGroupFilter === "السنتر") return group.type === "center";
-    if (activeGroupFilter === "م.ج برايفت") return group.type === "private_group";
-    if (activeGroupFilter === "طالب برايفت") return group.type === "private_student";
-    return true;
+    // Filter by type
+    let matchesFilter = true;
+    if (activeGroupFilter === "الكل") matchesFilter = true;
+    else if (activeGroupFilter === "أونلاين") matchesFilter = group.type === "online";
+    else if (activeGroupFilter === "السنتر") matchesFilter = group.type === "center";
+    else if (activeGroupFilter === "م.ج برايفت") matchesFilter = group.type === "private_group";
+    else if (activeGroupFilter === "طالب برايفت") matchesFilter = group.type === "private_student";
+
+    // Filter by search query
+    const matchesSearch = groupSearchQuery.trim() === "" ||
+      group.name.toLowerCase().includes(groupSearchQuery.toLowerCase());
+
+    console.warn('[REAL GROUP FILTER] Group:', group.name, 'Filter:', activeGroupFilter, 'matchesFilter:', matchesFilter, 'Search:', groupSearchQuery, 'matchesSearch:', matchesSearch);
+
+    return matchesFilter && matchesSearch;
   });
 
   const getFilterCount = (filter: string) => {
@@ -2426,7 +2491,12 @@ export default function Dashboard() {
 
             {userRole === 'super_admin' && (
               <button
-                onClick={() => window.location.href = '/admin'}
+                onClick={() => {
+                  console.log('[Admin Button] Clicked! Current userRole:', userRole);
+                  console.log('[Admin Button] Setting activeTab and navigating...');
+                  setActiveTab('لوحة الإدارة');
+                  window.location.href = '/admin';
+                }}
                 className="group flex w-full items-center gap-3 rounded-xl px-3 py-2 sm:px-4 sm:py-3 text-sm font-semibold transition-all duration-200 text-purple-400 bg-purple-500/5 hover:bg-purple-500/10 mt-4 border border-purple-500/20 shadow-[0_0_15px_rgba(168,85,247,0.15)]"
               >
                 <ShieldCheck className="h-5 w-5 transition-transform duration-200 group-hover:scale-110" />
@@ -2487,8 +2557,13 @@ export default function Dashboard() {
             <input type="file" accept=".json" ref={fileInputRef} className="hidden" onChange={handleImportData} />
             
             {userRole === 'super_admin' && (
-              <button 
-                onClick={() => window.location.href = '/admin'} 
+              <button
+                onClick={() => {
+                  console.log('[Admin Button Header] Clicked! Current userRole:', userRole);
+                  console.log('[Admin Button Header] Setting activeTab and navigating...');
+                  setActiveTab('لوحة الإدارة');
+                  window.location.href = '/admin';
+                }}
                 className="hidden sm:flex items-center gap-2 rounded-xl bg-purple-500/10 px-3 py-2 sm:px-4 sm:py-2.5 text-sm sm:text-base text-sm font-bold text-purple-400 transition-all hover:bg-purple-500/20 hover:text-purple-300 border border-purple-500/30 shadow-[0_0_15px_rgba(168,85,247,0.15)]"
               >
                 <ShieldCheck className="h-4 w-4" />
@@ -2526,8 +2601,13 @@ export default function Dashboard() {
               )}
             </div>
             
-            <button className="relative rounded-xl p-2 sm:p-2.5 text-gray-400 transition-colors hover:bg-white/10 hover:text-white bg-[#0B1120] border border-white/5">
-              <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-red-500 ring-2 ring-[#0B1120] animate-pulse"></span>
+            <button
+              onClick={() => setIsNotificationsOpen(!isNotificationsOpen)}
+              className="relative rounded-xl p-2 sm:p-2.5 text-gray-400 transition-colors hover:bg-white/10 hover:text-white bg-[#0B1120] border border-white/5"
+            >
+              {notifications.filter(n => !n.read).length > 0 && (
+                <span className="absolute right-2 top-2 h-2 w-2 rounded-full bg-red-500 ring-2 ring-[#0B1120] animate-pulse"></span>
+              )}
               <Bell className="h-4 w-4 sm:h-5 sm:w-5" />
             </button>
 
@@ -2553,7 +2633,7 @@ export default function Dashboard() {
         </header>
 
         {/* Main Scrollable Area */}
-        <main className="flex-1 overflow-y-auto p-4 pb-32 sm:p-6 sm:pb-24 lg:p-8 lg:pb-8 min-h-screen scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
+        <main className="flex-1 overflow-y-auto p-4 pb-[200px] sm:p-6 sm:pb-24 lg:p-8 lg:pb-8 min-h-screen scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
           <div className="mx-auto max-w-7xl space-y-8">
 
 
@@ -2628,7 +2708,7 @@ export default function Dashboard() {
                       <CalendarDays className="h-4 w-4" />
                     </div>
                     <div className="text-center">
-                      <p className="text-xl sm:text-2xl font-bold text-white">0</p>
+                      <p className="text-xl sm:text-2xl font-bold text-white">{getTodaySchedule().todayClasses.length}</p>
                       <p className="text-[10px] sm:text-xs font-medium text-gray-400 mt-0.5">حصص اليوم</p>
                     </div>
                   </div>
@@ -2647,18 +2727,48 @@ export default function Dashboard() {
 
                 {/* Schedule Section */}
                 <div className="space-y-4">
-                  <h3 className="text-lg font-bold text-white">حصص اليوم المجدولة (الأربعاء):</h3>
-                  
-                  <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-gray-800 bg-[#111827]/50 py-16 text-center transition-all hover:bg-[#111827]">
-                    <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-indigo-500/10 shadow-[0_0_20px_rgba(99,102,241,0.15)] relative">
-                      <Star className="h-8 w-8 text-indigo-400 drop-shadow-[0_0_8px_rgba(99,102,241,0.6)] relative z-10" />
-                      <div className="absolute inset-0 bg-indigo-400/20 rounded-full blur-md animate-pulse"></div>
+                  <h3 className="text-lg font-bold text-white">حصص اليوم المجدولة ({getTodaySchedule().todayName}):</h3>
+
+                  {getTodaySchedule().todayClasses.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-gray-800 bg-[#111827]/50 py-16 text-center transition-all hover:bg-[#111827]">
+                      <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-indigo-500/10 shadow-[0_0_20px_rgba(99,102,241,0.15)] relative">
+                        <Star className="h-8 w-8 text-indigo-400 drop-shadow-[0_0_8px_rgba(99,102,241,0.6)] relative z-10" />
+                        <div className="absolute inset-0 bg-indigo-400/20 rounded-full blur-md animate-pulse"></div>
+                      </div>
+                      <h4 className="text-lg font-medium text-white">لا توجد حصص مجدولة لليوم</h4>
+                      <p className="mt-2 text-sm text-gray-500 max-w-sm mx-auto">
+                        يمكنك إضافة أو تعديل مواعيد المجموعات من قسم المجموعات.
+                      </p>
                     </div>
-                    <h4 className="text-lg font-medium text-white">لا توجد حصص مجدولة لليوم</h4>
-                    <p className="mt-2 text-sm text-gray-500 max-w-sm mx-auto">
-                      يمكنك إضافة أو تعديل مواعيد المجموعات من قسم المجموعات.
-                    </p>
-                  </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {getTodaySchedule().todayClasses.map(group => (
+                        <div key={group.id} className="rounded-2xl border border-gray-800 bg-[#111827] p-5 shadow-sm transition-all hover:border-indigo-500/30 hover:shadow-lg hover:shadow-indigo-500/5">
+                          <div className="flex items-start justify-between mb-4">
+                            <div>
+                              <h4 className="text-lg font-bold text-white">{group.name}</h4>
+                              <p className="text-sm text-gray-400 mt-1">{group.subject}</p>
+                            </div>
+                            <span className="rounded-full bg-indigo-500/10 px-3 py-1 text-xs font-medium text-indigo-400 border border-indigo-500/20">
+                              {group.type === 'center' ? 'سنتر' : group.type === 'online' ? 'أونلاين' : 'برايفت'}
+                            </span>
+                          </div>
+                          <div className="space-y-2">
+                            {group.todaySchedules.map((schedule, idx) => (
+                              <div key={idx} className="flex items-center gap-3 bg-[#0B1120] rounded-lg px-4 py-3 border border-gray-800">
+                                <Clock className="h-5 w-5 text-indigo-400" />
+                                <span className="text-white font-medium">{formatTime12h(schedule.time)}</span>
+                              </div>
+                            ))}
+                          </div>
+                          <div className="mt-4 pt-4 border-t border-gray-800 flex items-center justify-between">
+                            <span className="text-sm text-gray-400">عدد الطلاب</span>
+                            <span className="text-white font-bold">{students.filter(s => s.group_id === group.id).length} طالب</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
             ) : activeTab === "المجموعات" ? (
@@ -2796,10 +2906,15 @@ export default function Dashboard() {
                 <div className="space-y-4">
                   <div className="relative">
                     <Search className="absolute right-4 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-500" />
-                    <input 
-                      type="text" 
-                      placeholder="ابحث عن اسم المجموعة..." 
+                    <input
+                      type="text"
+                      placeholder="ابحث عن اسم المجموعة..."
                       className="w-full rounded-xl border border-gray-800 bg-[#111827] py-3 pr-12 pl-4 text-sm text-white placeholder-gray-500 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all"
+                      value={groupSearchQuery}
+                      onChange={(e) => {
+                        console.warn('[REAL GROUP SEARCH INPUT] onChange fired! Value:', e.target.value);
+                        setGroupSearchQuery(e.target.value);
+                      }}
                     />
                   </div>
                   
@@ -2842,7 +2957,9 @@ export default function Dashboard() {
                   </div>
                 ) : (
                   <div className="flex flex-col gap-4 mt-8">
-                    {filteredGroups.map(group => (
+                    {(() => {
+                      console.warn('[REAL GROUP RENDER] Total groups:', groups.length, 'Filtered:', filteredGroups.length, 'Search:', groupSearchQuery, 'Filter:', activeGroupFilter);
+                      return filteredGroups.map(group => (
                       <div key={group.id} className="relative flex flex-col lg:flex-row lg:items-center justify-between p-4 rounded-xl bg-slate-900/80 border border-slate-800 hover:border-slate-700 transition-all cursor-pointer group" onClick={() => setSelectedGroupView(group)}>
                         <div className="flex items-center gap-4">
                           <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-indigo-500/10 border border-indigo-500/20">
@@ -2907,7 +3024,8 @@ export default function Dashboard() {
                           </div>
                         </div>
                       </div>
-                    ))}
+                    ))
+                    })()}
                   </div>
                 )}
                   </>
@@ -3273,229 +3391,26 @@ export default function Dashboard() {
                 </div>
               </div>
             ) : activeTab === "الملازم" ? (
-              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                {/* Header Actions */}
-                <div className="flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center">
-                  <div>
-                    <h3 className="text-xl font-bold text-white">الملازم والمذكرات</h3>
-                    <p className="mt-1 text-sm text-gray-400">إدارة تسليم ومبيعات الملازم للطلاب</p>
-                  </div>
-                </div>
+  <MaterialsTab
+    isActive={activeTab === "الملازم"}
+    materials={materials}
+    setMaterials={setMaterials as any}
+    materialDistributions={materialDistributions}
+    setMaterialDistributions={setMaterialDistributions as any}
+    isLoadingMaterials={isLoadingMaterials}
+    groups={groups}
+    students={students}
+    teacherId={teacherId || ''}
+  />
 
-                {/* Create Material Form */}
-                <div className="bg-[#111827] rounded-2xl border border-gray-800 p-6">
-                  <h4 className="text-lg font-bold text-white mb-4">إضافة ملزمة جديدة</h4>
-                  <form onSubmit={handleSaveMaterial} className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 items-end">
-                    <div className="lg:col-span-1 space-y-2">
-                      <label className="text-sm font-medium text-gray-300">اسم الملزمة</label>
-                      <input required placeholder="مثال: مذكرة مراجعة" value={materialForm.name} onChange={e => setMaterialForm({...materialForm, name: e.target.value})} className="w-full rounded-xl border border-gray-700 bg-[#0B1120] px-3 py-2 sm:px-4 sm:py-2.5 text-sm sm:text-base text-white focus:border-indigo-500 focus:outline-none" />
-                    </div>
-                    <div className="lg:col-span-1 space-y-2">
-                      <label className="text-sm font-medium text-gray-300">المجموعة</label>
-                      <select required value={materialForm.group_id} onChange={e => setMaterialForm({...materialForm, group_id: e.target.value})} className="w-full rounded-xl border border-gray-700 bg-[#0B1120] px-3 py-2 sm:px-4 sm:py-2.5 text-sm sm:text-base text-white focus:border-indigo-500 focus:outline-none appearance-none">
-                        <option value="">اختر المجموعة</option>
-                        {groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
-                      </select>
-                    </div>
-                    <div className="lg:col-span-1 space-y-2">
-                      <label className="text-sm font-medium text-gray-300">التكلفة (ج.م)</label>
-                      <input type="number" placeholder="0" value={materialForm.cost} onChange={e => setMaterialForm({...materialForm, cost: e.target.value})} className="w-full rounded-xl border border-gray-700 bg-[#0B1120] px-3 py-2 sm:px-4 sm:py-2.5 text-sm sm:text-base text-white focus:border-indigo-500 focus:outline-none" />
-                    </div>
-                    <div className="lg:col-span-1 space-y-2">
-                      <label className="text-sm font-medium text-gray-300">سعر البيع (ج.م)</label>
-                      <input type="number" placeholder="0" value={materialForm.price} onChange={e => setMaterialForm({...materialForm, price: e.target.value})} className="w-full rounded-xl border border-gray-700 bg-[#0B1120] px-3 py-2 sm:px-4 sm:py-2.5 text-sm sm:text-base text-white focus:border-indigo-500 focus:outline-none" />
-                    </div>
-                    <div className="lg:col-span-1">
-                      <button disabled={isSubmittingMaterial} type="submit" className="w-full rounded-xl bg-indigo-600 px-3 py-2 sm:px-4 sm:py-2.5 text-sm sm:text-base text-sm font-bold text-white hover:bg-indigo-700 transition-colors disabled:opacity-50 flex items-center justify-center gap-2">
-                        <Plus className="h-4 w-4" /> إضافة
-                      </button>
-                    </div>
-                  </form>
-                </div>
-
-                {/* Materials List */}
-                <div className="space-y-6">
-                  {isLoadingMaterials ? (
-                    <div className="text-center py-12 text-gray-400">جاري التحميل...</div>
-                  ) : materials.length === 0 ? (
-                    <div className="text-center py-12 text-gray-500 bg-[#111827] rounded-2xl border border-gray-800 border-dashed">لا توجد ملازم مسجلة.</div>
-                  ) : (
-                    materials.map(material => {
-                      const groupStudents = students.filter(s => s.group_id === material.group_id);
-                      const group = groups.find(g => g.id === material.group_id);
-                      
-                      return (
-                        <div key={material.id} className="bg-[#111827] rounded-2xl border border-gray-800 overflow-hidden">
-                          <div className="p-4 border-b border-gray-800 bg-gray-900/50 flex flex-wrap gap-4 justify-between items-center">
-                            <div>
-                              <h4 className="font-bold text-white text-lg flex items-center gap-2">
-                                <BookCheck className="h-5 w-5 text-indigo-400" /> {material.name}
-                              </h4>
-                              <p className="text-sm text-gray-400 mt-1">{group?.name || 'مجموعة محذوفة'} • التكلفة: {material.cost} ج.م • البيع: {material.price} ج.م</p>
-                            </div>
-                            <div className="bg-indigo-500/10 border border-indigo-500/20 rounded-lg px-4 py-2 text-center min-w-[120px]">
-                              <div className="text-xs text-indigo-300">إجمالي المبيعات</div>
-                              <div className="font-bold text-indigo-400 mt-1">
-                                {materialDistributions.filter(d => d.material_id === material.id && d.status === 'تم التسليم').length * material.price} ج.م
-                              </div>
-                            </div>
-                          </div>
-                          <div className="p-4 overflow-x-auto">
-                            <table className="w-full text-right text-sm">
-                              <thead>
-                                <tr className="border-b border-gray-800 text-gray-400">
-                                  <th className="pb-3 font-medium">اسم الطالب</th>
-                                  <th className="pb-3 font-medium text-center">الحالة</th>
-                                  <th className="pb-3 font-medium text-left">إجراء</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {groupStudents.length === 0 ? (
-                                  <tr><td colSpan={3} className="text-center py-4 text-gray-500">لا يوجد طلاب في هذه المجموعة</td></tr>
-                                ) : (
-                                  groupStudents.map(student => {
-                                    const isDelivered = materialDistributions.some(d => d.material_id === material.id && d.student_id === student.id && d.status === 'تم التسليم');
-                                    return (
-                                      <tr key={student.id} className="border-b border-gray-800/50 last:border-0 hover:bg-white/5">
-                                        <td className="py-3 text-white font-medium">{student.full_name}</td>
-                                        <td className="py-3 text-center">
-                                          <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium ${isDelivered ? 'bg-green-500/10 text-green-400 border border-green-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'}`}>
-                                            {isDelivered ? 'تم التسليم' : 'لم يستلم'}
-                                          </span>
-                                        </td>
-                                        <td className="py-3 text-left">
-                                          <button 
-                                            onClick={() => handleToggleMaterialDistribution(material.id, student.id, isDelivered)}
-                                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${isDelivered ? 'bg-gray-800 text-gray-400 hover:text-red-400' : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}
-                                          >
-                                            {isDelivered ? 'إلغاء' : 'تسليم للملزمة'}
-                                          </button>
-                                        </td>
-                                      </tr>
-                                    );
-                                  })
-                                )}
-                              </tbody>
-                            </table>
-                          </div>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
             ) : activeTab === "إدارة المساعدين" ? (
-              <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
-                <div className="flex flex-col sm:flex-row gap-4 justify-between items-start sm:items-center">
-                  <div>
-                    <h3 className="text-xl font-bold text-white">إدارة المساعدين</h3>
-                    <p className="mt-1 text-sm text-gray-400">أضف المساعدين وقم بإدارة صلاحياتهم</p>
-                  </div>
-                </div>
+  <AssistantsTab
+    isActive={activeTab === "إدارة المساعدين"}
+    teacherId={teacherId || ''}
+    userRole={userRole || ''}
+    getCleanPhone={getCleanPhone}
+  />
 
-                <div className="bg-[#111827] rounded-2xl border border-gray-800 p-6">
-                  <h4 className="text-lg font-bold text-white mb-4 flex items-center gap-2"><Plus className="w-5 h-5 text-indigo-400" /> إضافة مساعد جديد</h4>
-                  <form onSubmit={async (e) => {
-                    e.preventDefault();
-                    if(!assistantForm.name || !assistantForm.phone) return;
-                    setIsSubmittingAssistant(true);
-                    const cleanPhone = getCleanPhone(assistantForm.phone);
-                    
-                    const { data, error } = await supabase.from('pre_authorized_assistants').insert([{
-                      teacher_id: teacherId,
-                      name: assistantForm.name,
-                      phone: cleanPhone
-                    }]).select();
-                    
-                    setIsSubmittingAssistant(false);
-                    if(error) {
-                      toast.error("حدث خطأ أثناء إضافة المساعد");
-                      console.error(error);
-                    } else {
-                      toast.success("تم إضافة المساعد بنجاح");
-                      setAssistantForm({ name: '', phone: '' });
-                      if(data) setPreAuthorizedAssistants(prev => [data[0], ...prev]);
-                    }
-                  }} className="flex flex-col sm:flex-row gap-4">
-                    <input 
-                      type="text" 
-                      required
-                      placeholder="اسم المساعد" 
-                      value={assistantForm.name}
-                      onChange={(e) => setAssistantForm({...assistantForm, name: e.target.value})}
-                      className="flex-1 rounded-xl border border-gray-800 bg-[#0B1120] py-3 px-4 text-sm text-white focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all"
-                    />
-                    <input 
-                      type="tel" 
-                      required
-                      dir="ltr"
-                      placeholder="رقم الهاتف (مثال: 01xxxxxxxxx)" 
-                      value={assistantForm.phone}
-                      onChange={(e) => setAssistantForm({...assistantForm, phone: e.target.value})}
-                      className="flex-1 rounded-xl border border-gray-800 bg-[#0B1120] py-3 px-4 text-sm text-white focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all text-left font-mono"
-                    />
-                    <button 
-                      type="submit"
-                      disabled={isSubmittingAssistant}
-                      className="bg-indigo-600 text-white px-6 py-3 rounded-xl font-bold hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-500/20 disabled:opacity-50 flex-shrink-0"
-                    >
-                      {isSubmittingAssistant ? 'جاري الإضافة...' : 'إضافة مصرح'}
-                    </button>
-                  </form>
-                </div>
-
-                <div className="bg-[#111827] rounded-2xl border border-gray-800 overflow-hidden">
-                  <div className="p-4 border-b border-gray-800 bg-[#1f2937]/50">
-                    <h4 className="font-bold text-white flex items-center gap-2"><CheckCircle className="w-5 h-5 text-green-400" /> قائمة المساعدين المصرح لهم بالتسجيل</h4>
-                  </div>
-                  {isLoadingAssistants ? (
-                    <div className="flex justify-center p-8">
-                      <div className="w-6 h-6 rounded-full border-2 border-indigo-500 border-t-transparent animate-spin"></div>
-                    </div>
-                  ) : preAuthorizedAssistants.length === 0 ? (
-                    <div className="p-8 text-center text-gray-500">
-                      <Users className="w-12 h-12 mx-auto mb-3 opacity-20" />
-                      <p>لا يوجد مساعدين مصرح لهم حالياً</p>
-                    </div>
-                  ) : (
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm text-right text-gray-300">
-                        <thead className="bg-[#1f2937]/30 text-xs uppercase text-gray-400">
-                          <tr>
-                            <th className="px-6 py-4 font-semibold">الاسم</th>
-                            <th className="px-6 py-4 font-semibold text-left">رقم الهاتف</th>
-                            <th className="px-6 py-4 font-semibold text-left w-20">إجراءات</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-gray-800">
-                          {preAuthorizedAssistants.map((assistant) => (
-                            <tr key={assistant.id} className="hover:bg-white/5 transition-colors">
-                              <td className="px-6 py-4 font-medium text-white">{assistant.name}</td>
-                              <td className="px-6 py-4 font-mono text-left" dir="ltr">{assistant.phone}</td>
-                              <td className="px-6 py-4 text-left">
-                                <button 
-                                  onClick={async () => {
-                                    if(confirm('هل أنت متأكد من حذف هذا المصرح؟')) {
-                                      const { error } = await supabase.from('pre_authorized_assistants').delete().eq('id', assistant.id);
-                                      if(!error) {
-                                        toast.success('تم الحذف');
-                                        setPreAuthorizedAssistants(prev => prev.filter(a => a.id !== assistant.id));
-                                      }
-                                    }
-                                  }}
-                                  className="text-red-400 hover:text-red-300 p-2 hover:bg-red-400/10 rounded-lg transition-colors"
-                                >
-                                  <Trash2 className="w-4 h-4" />
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
-              </div>
             ) : activeTab === "الطلاب" ? (
               <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
                 {/* Header Actions */}
@@ -3518,10 +3433,15 @@ export default function Dashboard() {
                 {/* Search */}
                 <div className="relative mb-4">
                   <Search className="absolute right-4 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-500" />
-                  <input 
-                    type="text" 
-                    placeholder="ابحث عن طالب بالاسم أو الرقم..." 
+                  <input
+                    type="text"
+                    placeholder="ابحث عن طالب بالاسم أو الرقم..."
                     className="w-full rounded-xl border border-gray-800 bg-[#111827] py-3 pr-12 pl-4 text-sm text-white placeholder-gray-500 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all shadow-sm"
+                    value={studentSearchQuery}
+                    onChange={(e) => {
+                      console.warn('[REAL STUDENT SEARCH INPUT] onChange fired! Value:', e.target.value);
+                      setStudentSearchQuery(e.target.value);
+                    }}
                   />
                 </div>
 
@@ -3554,8 +3474,24 @@ export default function Dashboard() {
 
                 {/* Students List / Empty State */}
                 {(() => {
-                  const filteredStudentsList = students.filter(s => activeStudentFilter === 'الكل' || s.group_id === activeStudentFilter);
-                  
+                  let filteredStudentsList = students.filter(s => activeStudentFilter === 'الكل' || s.group_id === activeStudentFilter);
+
+                  // Apply search filter
+                  if (studentSearchQuery.trim() !== "") {
+                    filteredStudentsList = filteredStudentsList.filter(s => {
+                      const matchesName = s.full_name.toLowerCase().includes(studentSearchQuery.toLowerCase());
+                      const matchesStudentPhone = s.student_phone?.includes(studentSearchQuery) || false;
+                      const matchesParentPhone = s.parent_phone?.includes(studentSearchQuery) || false;
+                      const matchesSearch = matchesName || matchesStudentPhone || matchesParentPhone;
+
+                      console.warn('[REAL STUDENT FILTER] Student:', s.full_name, 'Search:', studentSearchQuery, 'matchesSearch:', matchesSearch);
+
+                      return matchesSearch;
+                    });
+                  }
+
+                  console.warn('[REAL STUDENT RENDER] Total students:', students.length, 'Filtered:', filteredStudentsList.length, 'Search:', studentSearchQuery, 'Group Filter:', activeStudentFilter);
+
                   if (isLoadingStudents) {
                     return (
                       <div className="flex justify-center py-24">
@@ -4074,66 +4010,74 @@ export default function Dashboard() {
 
       {/* Student Profile Modal */}
       {selectedStudent && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 animate-in fade-in duration-200">
-          <div className="w-full max-w-4xl rounded-2xl border border-gray-700 bg-[#0B1120] shadow-2xl flex flex-col max-h-[90vh] overflow-hidden">
-            
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 backdrop-blur-sm sm:p-4 animate-in fade-in duration-200">
+          <div className="w-full h-full sm:h-auto sm:max-w-4xl sm:rounded-2xl border-0 sm:border border-gray-700 bg-[#0B1120] shadow-2xl flex flex-col sm:max-h-[90vh] overflow-hidden">
+
             {/* Header Area */}
-            <div className="relative bg-[#111827] border-b border-gray-800 px-6 pt-8 pb-6">
-              <div className="absolute top-4 right-4">
-                <button onClick={() => setSelectedStudent(null)} className="rounded-full p-2 bg-gray-800/50 text-gray-400 hover:bg-gray-700 hover:text-white transition-colors">
+            <div className="relative bg-[#111827] border-b border-gray-800 px-4 sm:px-6 pt-6 sm:pt-8 pb-4 sm:pb-6">
+              <div className="absolute top-3 sm:top-4 right-3 sm:right-4 z-10">
+                <button onClick={() => setSelectedStudent(null)} className="rounded-full p-2 bg-gray-800/80 text-gray-400 hover:bg-gray-700 hover:text-white transition-colors">
                   <X className="h-5 w-5" />
                 </button>
               </div>
-              <div className="flex flex-col sm:flex-row items-center sm:items-start gap-6">
-                <div className="flex h-24 w-24 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500/20 to-purple-500/20 border-2 border-indigo-500/30 text-4xl font-bold text-indigo-300 shadow-xl">
+
+              {/* Student Info - Simplified on mobile */}
+              <div className="flex flex-col items-center gap-3 sm:gap-4">
+                <div className="flex h-20 w-20 sm:h-24 sm:w-24 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500/20 to-purple-500/20 border-2 border-indigo-500/30 text-3xl sm:text-4xl font-bold text-indigo-300 shadow-xl">
                   {selectedStudent.full_name.charAt(0)}
                 </div>
-                <div className="text-center sm:text-right flex-1">
-                  <h2 className="text-2xl font-bold text-white mb-2">{selectedStudent.full_name}</h2>
-                  <div className="flex flex-wrap items-center justify-center sm:justify-start gap-3">
-                    <span className="inline-flex items-center rounded-md bg-gray-800 px-3 py-1 text-sm font-medium text-gray-300 border border-gray-700">
-                      <Users className="w-4 h-4 ml-2 opacity-50" />
+                <div className="text-center w-full">
+                  <h2 className="text-xl sm:text-2xl font-bold text-white mb-2">{selectedStudent.full_name}</h2>
+                  <div className="flex flex-wrap items-center justify-center gap-2">
+                    <span className="inline-flex items-center rounded-md bg-gray-800 px-2.5 py-1 text-xs sm:text-sm font-medium text-gray-300 border border-gray-700">
+                      <Users className="w-3.5 h-3.5 sm:w-4 sm:h-4 ml-1.5 opacity-50" />
                       {groups.find(g => g.id === selectedStudent.group_id)?.name || 'غير محدد'}
                     </span>
-                    <span className="inline-flex items-center rounded-md bg-green-500/10 px-3 py-1 text-sm font-medium text-green-400 border border-green-500/20">
+                    <span className="inline-flex items-center rounded-md bg-green-500/10 px-2.5 py-1 text-xs sm:text-sm font-medium text-green-400 border border-green-500/20">
                       منتظم
                     </span>
                   </div>
-                  <div className="flex flex-wrap justify-center sm:justify-start gap-3 mt-4">
+
+                  {/* Action Buttons - 2x2 Grid on mobile */}
+                  <div className="grid grid-cols-2 gap-2 sm:gap-3 mt-4 max-w-md mx-auto">
                     {selectedStudent.student_phone && (
-                      <a href={`tel:${selectedStudent.student_phone}`} className="flex items-center gap-2 rounded-lg bg-white/5 px-4 py-2 text-sm font-medium text-gray-300 hover:bg-white/10 hover:text-white transition-colors border border-gray-700">
-                        <PhoneCall className="h-4 w-4 text-indigo-400" />
-                        اتصال بالطالب
+                      <a href={`tel:${selectedStudent.student_phone}`} className="flex items-center justify-center gap-1.5 sm:gap-2 rounded-lg bg-white/5 px-2 sm:px-3 py-2.5 sm:py-3 text-xs sm:text-sm font-medium text-gray-300 hover:bg-white/10 hover:text-white transition-colors border border-gray-700 min-h-[48px]">
+                        <PhoneCall className="h-4 w-4 text-indigo-400 shrink-0" />
+                        <span className="hidden sm:inline">اتصال بالطالب</span>
+                        <span className="sm:hidden">الطالب</span>
                       </a>
                     )}
                     {selectedStudent.parent_phone && (
-                      <a href={`tel:${selectedStudent.parent_phone}`} className="flex items-center gap-2 rounded-lg bg-white/5 px-4 py-2 text-sm font-medium text-gray-300 hover:bg-white/10 hover:text-white transition-colors border border-gray-700">
-                        <PhoneCall className="h-4 w-4 text-purple-400" />
-                        اتصال بولي الأمر
+                      <a href={`tel:${selectedStudent.parent_phone}`} className="flex items-center justify-center gap-1.5 sm:gap-2 rounded-lg bg-white/5 px-2 sm:px-3 py-2.5 sm:py-3 text-xs sm:text-sm font-medium text-gray-300 hover:bg-white/10 hover:text-white transition-colors border border-gray-700 min-h-[48px]">
+                        <PhoneCall className="h-4 w-4 text-purple-400 shrink-0" />
+                        <span className="hidden sm:inline">اتصال بولي الأمر</span>
+                        <span className="sm:hidden">ولي الأمر</span>
                       </a>
                     )}
-                    <button onClick={() => handleWhatsAppReport(selectedStudent)} className="flex items-center gap-2 rounded-lg bg-green-500/10 px-4 py-2 text-sm font-medium text-green-400 hover:bg-green-500/20 transition-colors border border-green-500/20">
-                      <MessageSquare className="h-4 w-4" />
-                      إرسال تقرير واتساب
+                    <button onClick={() => handleWhatsAppReport(selectedStudent)} className="flex items-center justify-center gap-1.5 sm:gap-2 rounded-lg bg-green-500/10 px-2 sm:px-3 py-2.5 sm:py-3 text-xs sm:text-sm font-medium text-green-400 hover:bg-green-500/20 transition-colors border border-green-500/20 min-h-[48px]">
+                      <MessageSquare className="h-4 w-4 shrink-0" />
+                      <span className="hidden sm:inline">تقرير واتساب</span>
+                      <span className="sm:hidden">تقرير</span>
                     </button>
-                    <button onClick={() => handleGenerateMonthlyReport(selectedStudent)} className="flex items-center gap-2 rounded-lg bg-[#25D366]/10 px-4 py-2 text-sm font-medium text-[#25D366] hover:bg-[#25D366]/20 transition-colors border border-[#25D366]/20">
-                      <MessageSquare className="h-4 w-4" />
-                      إرسال التقرير الشهري 📱
+                    <button onClick={() => handleGenerateMonthlyReport(selectedStudent)} className="flex items-center justify-center gap-1.5 sm:gap-2 rounded-lg bg-[#25D366]/10 px-2 sm:px-3 py-2.5 sm:py-3 text-xs sm:text-sm font-medium text-[#25D366] hover:bg-[#25D366]/20 transition-colors border border-[#25D366]/20 min-h-[48px]">
+                      <MessageSquare className="h-4 w-4 shrink-0" />
+                      <span className="hidden sm:inline">تقرير شهري</span>
+                      <span className="sm:hidden">شهري 📱</span>
                     </button>
                   </div>
                 </div>
               </div>
             </div>
 
-            {/* Tabs Navigation */}
-            <div className="flex border-b border-gray-800 bg-[#111827] px-6 overflow-x-auto scrollbar-hide">
+            {/* Tabs Navigation - Better mobile scrolling */}
+            <div className="flex border-b border-gray-800 bg-[#111827] px-2 sm:px-6 overflow-x-auto scrollbar-hide -webkit-overflow-scrolling-touch">
               {['الحضور', 'الواجب', 'التسميع', 'الدفع', 'الامتحانات']
                 .filter(tab => !(userRole === 'assistant' && tab === 'الدفع'))
                 .map(tab => (
                 <button
                   key={tab}
                   onClick={() => setStudentProfileTab(tab)}
-                  className={`whitespace-nowrap px-6 py-4 text-sm font-bold transition-all border-b-2 ${
+                  className={`whitespace-nowrap px-4 sm:px-6 py-3 sm:py-4 text-sm sm:text-base font-bold transition-all border-b-2 min-h-[52px] sm:min-h-auto ${
                     studentProfileTab === tab
                       ? "border-indigo-500 text-indigo-400 bg-indigo-500/5"
                       : "border-transparent text-gray-400 hover:text-gray-200 hover:bg-white/5"
@@ -4144,8 +4088,8 @@ export default function Dashboard() {
               ))}
             </div>
 
-            {/* Tab Content */}
-            <div className="flex-1 overflow-y-auto p-6 bg-[#0B1120] scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
+            {/* Tab Content - Better mobile padding */}
+            <div className="flex-1 overflow-y-auto p-4 sm:p-6 bg-[#0B1120] scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
               
               {/* --- الواجب (Homework) --- */}
               {studentProfileTab === 'الواجب' && (
@@ -4782,8 +4726,7 @@ export default function Dashboard() {
           { name: 'المجموعات', icon: Library },
           { name: 'الطلاب', icon: Users },
           { name: 'الجدول', icon: CalendarDays },
-          ...((userRole === 'teacher' || userRole === 'super_admin') ? [{ name: 'المالية', icon: Wallet }] : []),
-          { name: 'الملازم', icon: BookCheck }
+          ...((userRole === 'teacher' || userRole === 'super_admin') ? [{ name: 'باقات معلمي', icon: Crown }] : []),
         ].map((item) => {
           const isActive = activeTab === item.name;
           const Icon = item.icon;
@@ -4805,6 +4748,94 @@ export default function Dashboard() {
           );
         })}
       </nav>
+
+      {/* Notifications Modal */}
+      {isNotificationsOpen && (
+        <div className="fixed inset-0 z-[70] flex items-start justify-center bg-black/50 backdrop-blur-sm p-4 pt-20 animate-in fade-in duration-200" onClick={() => setIsNotificationsOpen(false)}>
+          <div className="w-full max-w-md rounded-2xl border border-gray-700 bg-[#111827] shadow-2xl animate-in slide-in-from-top-4 duration-300" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between border-b border-gray-800 p-4">
+              <h2 className="text-lg font-bold text-white flex items-center gap-2">
+                <Bell className="h-5 w-5 text-indigo-400" />
+                الإشعارات
+                {notifications.filter(n => !n.read).length > 0 && (
+                  <span className="inline-flex items-center justify-center rounded-full bg-red-500 px-2 py-0.5 text-xs font-bold text-white">
+                    {notifications.filter(n => !n.read).length}
+                  </span>
+                )}
+              </h2>
+              <button
+                onClick={() => setIsNotificationsOpen(false)}
+                className="rounded-lg p-2 text-gray-400 hover:bg-white/5 hover:text-white transition-colors"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="max-h-[500px] overflow-y-auto p-4 space-y-3 scrollbar-thin scrollbar-thumb-white/10 scrollbar-track-transparent">
+              {notifications.length === 0 ? (
+                <div className="text-center py-12 text-gray-500">
+                  <Bell className="h-12 w-12 mx-auto mb-3 text-gray-600" />
+                  <p>لا توجد إشعارات حالياً</p>
+                </div>
+              ) : (
+                notifications.map((notification) => (
+                  <div
+                    key={notification.id}
+                    className={`rounded-xl border p-4 transition-all hover:border-gray-600 ${
+                      notification.read ? 'bg-[#0B1120] border-gray-800' : 'bg-indigo-500/5 border-indigo-500/20'
+                    }`}
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${
+                        notification.type === 'payment' ? 'bg-red-500/10 text-red-400' :
+                        notification.type === 'success' ? 'bg-green-500/10 text-green-400' :
+                        notification.type === 'warning' ? 'bg-yellow-500/10 text-yellow-400' :
+                        'bg-blue-500/10 text-blue-400'
+                      }`}>
+                        {notification.type === 'payment' ? (
+                          <DollarSign className="h-5 w-5" />
+                        ) : notification.type === 'success' ? (
+                          <CheckCircle className="h-5 w-5" />
+                        ) : notification.type === 'warning' ? (
+                          <Clock className="h-5 w-5" />
+                        ) : (
+                          <CalendarDays className="h-5 w-5" />
+                        )}
+                      </div>
+                      <div className="flex-1">
+                        <h3 className="text-sm font-bold text-white">{notification.title}</h3>
+                        <p className="text-xs text-gray-400 mt-1">{notification.message}</p>
+                        <p className="text-[10px] text-gray-500 mt-2">
+                          {new Date(notification.date).toLocaleDateString('ar-EG', {
+                            year: 'numeric',
+                            month: 'long',
+                            day: 'numeric',
+                            hour: '2-digit',
+                            minute: '2-digit'
+                          })}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            {notifications.length > 0 && (
+              <div className="border-t border-gray-800 p-4">
+                <button
+                  onClick={() => {
+                    setNotifications(notifications.map(n => ({ ...n, read: true })));
+                  }}
+                  className="w-full rounded-xl bg-indigo-600 py-2.5 text-sm font-bold text-white hover:bg-indigo-700 transition-colors"
+                >
+                  تمييز الكل كمقروء
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
     </div>
   );

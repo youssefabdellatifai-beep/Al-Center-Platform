@@ -1,688 +1,619 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { supabase } from "../../lib/supabaseClient";
-import { useRouter } from "next/navigation";
-import toast from "react-hot-toast";
+import { useState, useEffect } from 'react';
+import { supabase } from '@/lib/supabaseClient';
+import { useRouter } from 'next/navigation';
+import toast from 'react-hot-toast';
 import {
   Users,
+  Crown,
+  TrendingUp,
+  DollarSign,
   ShieldCheck,
   Search,
-  MoreVertical,
-  Calendar,
-  AlertTriangle,
+  Filter,
+  Download,
+  Plus,
+  Edit,
+  Trash2,
   Ban,
   CheckCircle,
-  Plus,
-  Trash2,
-  LogOut,
-  Clock,
-  X
-} from "lucide-react";
+  Calendar,
+  Copy,
+  RefreshCw,
+  ArrowLeft
+} from 'lucide-react';
 
-type TeacherProfile = {
-  id: string;
-  full_name: string;
-  subject: string;
-  phone: string;
-  subscription_expires_at: string | null;
-  status: 'active' | 'suspended';
-  subscription_plan: string | null;
-  created_at: string;
-};
+// Force dynamic rendering
+export const dynamic = 'force-dynamic';
 
-type ActivationCode = {
-  id: string;
-  code: string;
-  duration_months: number;
-  is_used: boolean;
-  plan_name?: string;
-  created_at: string;
-};
-
-export default function AdminDashboard() {
+export default function AdminPanel() {
   const router = useRouter();
-  const [loading, setLoading] = useState(true);
-  const [teachers, setTeachers] = useState<TeacherProfile[]>([]);
-  const [searchQuery, setSearchQuery] = useState("");
+  const [isLoading, setIsLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'teachers' | 'codes'>('dashboard');
 
-  // Modals
-  const [isExtendModalOpen, setIsExtendModalOpen] = useState(false);
-  const [isDeleteModalOpen, setIsDeleteModalOpen] = useState(false);
-  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-  const [isGenerateCodeModalOpen, setIsGenerateCodeModalOpen] = useState(false);
-  const [selectedTeacher, setSelectedTeacher] = useState<TeacherProfile | null>(null);
-  
-  const [activationCodes, setActivationCodes] = useState<ActivationCode[]>([]);
-  const [generateCodeDuration, setGenerateCodeDuration] = useState<number>(1);
+  // Auth state
+  const [userRole, setUserRole] = useState<string | null>(null);
+  const [userId, setUserId] = useState<string | null>(null);
 
-  // Add Teacher Form
-  const [addForm, setAddForm] = useState({ name: '', phone: '', subject: '', password: '' });
+  // Teachers data
+  const [teachers, setTeachers] = useState<any[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterStatus, setFilterStatus] = useState<'all' | 'active' | 'expired' | 'suspended'>('all');
+  const [filterPlan, setFilterPlan] = useState<'all' | 'trial' | 'monthly' | 'annual'>('all');
 
+  // Codes data
+  const [codes, setCodes] = useState<any[]>([]);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [codeForm, setCodeForm] = useState({
+    type: 'trial',
+    duration_days: 7,
+    quantity: 1
+  });
+
+  // Stats
+  const [stats, setStats] = useState({
+    totalTeachers: 0,
+    activeSubscriptions: 0,
+    revenue: 0,
+    newThisMonth: 0
+  });
+
+  // Check auth and role
   useEffect(() => {
-    checkAdminAccess();
-  }, []);
+    const checkAuth = async () => {
+      try {
+        console.warn('[ADMIN AUTH START] Starting admin auth check...');
 
-  const checkAdminAccess = async () => {
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) {
+        // Use getUser() instead of getSession() — getUser() makes an API call
+        // to validate the JWT and is reliable even on first load after navigation.
+        // getSession() reads from localStorage and can return null before
+        // the Supabase client has finished rehydrating, causing a false redirect.
+        const { data: { user }, error: userError } = await supabase.auth.getUser();
+        console.warn('[ADMIN AUTH RESULT] user:', user?.id, 'error:', userError?.message);
+
+        if (!user) {
+          console.warn('[ADMIN REDIRECT] No authenticated user, redirecting to /');
+          router.push('/');
+          return;
+        }
+
+        console.warn('[ADMIN PROFILE RESULT] Fetching profile for user:', user.id);
+        const { data: profile, error: profileError } = await supabase
+          .from('profiles')
+          .select('role')
+          .eq('id', user.id)
+          .single();
+
+        console.warn('[ADMIN PROFILE RESULT] profile:', profile, 'error:', profileError?.message);
+        console.warn('[ADMIN ROLE] role value:', profile?.role);
+
+        if (profileError || !profile || profile.role !== 'super_admin') {
+          console.warn('[ADMIN REDIRECT] Access denied. role:', profile?.role, 'error:', profileError?.message);
+          toast.error('غير مصرح لك بالوصول إلى هذه الصفحة');
+          router.push('/');
+          return;
+        }
+
+        console.warn('[ADMIN READY] Access granted! Role:', profile.role, 'User:', user.id);
+        setUserRole(profile.role);
+        setUserId(user.id);
+        setIsLoading(false);
+      } catch (err) {
+        console.error('[ADMIN AUTH START] EXCEPTION:', err);
+        toast.error('حدث خطأ في التحقق من الصلاحيات');
         router.push('/');
-        return;
       }
+    };
 
-      const { data: profile } = await supabase
-        .from('profiles')
-        .select('*')
-        .eq('id', session.user.id)
-        .single();
+    checkAuth();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-      if (!profile || profile.role !== 'super_admin') {
-        router.push('/');
-        return;
-      }
+  // Fetch teachers
+  useEffect(() => {
+    if (!userRole) return;
+    fetchTeachers();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userRole]);
 
-      await fetchTeachers();
-      await fetchActivationCodes();
-    } catch (err) {
-      console.error("Auth error", err);
-      router.push('/');
-    } finally {
-      setLoading(false);
-    }
-  };
+  // Fetch codes
+  useEffect(() => {
+    if (!userRole) return;
+    fetchCodes();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userRole]);
 
   const fetchTeachers = async () => {
-    try {
-      const { data, error } = await supabase
-        .from('profiles')
-        .select('*')
-        .neq('role', 'super_admin')
-        .order('created_at', { ascending: false });
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('role', 'teacher')
+      .order('created_at', { ascending: false });
 
-      console.log('Fetched Profiles:', data, error);
-
-      if (error && error.code !== 'PGRST116') throw error;
-      
-      const formattedData = (data || []).map((t: any) => ({
-        ...t,
-        status: t.status || 'active',
-        subscription_plan: t.subscription_plan || 'monthly',
-        role: t.role || 'teacher',
-        subscription_expires_at: t.subscription_expires_at || new Date(new Date().setMonth(new Date().getMonth() + 1)).toISOString()
-      }));
-
-      setTeachers(formattedData);
-    } catch (err) {
-      toast.error("فشل في تحميل بيانات المعلمين");
+    if (error) {
+      console.error('Error fetching teachers:', error);
+      return;
     }
+
+    setTeachers(data || []);
+
+    // Calculate stats
+    const now = new Date();
+    const activeCount = data?.filter(t => {
+      if (!t.subscription_expires_at) return false;
+      return new Date(t.subscription_expires_at) > now;
+    }).length || 0;
+
+    const thisMonth = data?.filter(t => {
+      const created = new Date(t.created_at);
+      return created.getMonth() === now.getMonth() && created.getFullYear() === now.getFullYear();
+    }).length || 0;
+
+    setStats({
+      totalTeachers: data?.length || 0,
+      activeSubscriptions: activeCount,
+      revenue: 0, // TODO: Calculate from payments
+      newThisMonth: thisMonth
+    });
   };
 
-  const handleToggleStatus = async (teacher: TeacherProfile) => {
-    const newStatus = teacher.status === 'active' ? 'suspended' : 'active';
-    try {
-      await supabase
-        .from('profiles')
-        .update({ status: newStatus })
-        .eq('id', teacher.id);
-      
-      toast.success(`تم ${newStatus === 'active' ? 'تفعيل' : 'إيقاف'} حساب المعلم`);
-      fetchTeachers();
-    } catch (err) {
-      toast.error("فشل في تحديث الحالة");
+  const fetchCodes = async () => {
+    const { data, error } = await supabase
+      .from('subscription_codes')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Error fetching codes:', error);
+      return;
     }
+
+    setCodes(data || []);
   };
 
-  const handleExtendSubscription = async (months: number) => {
-    if (!selectedTeacher) return;
-    
-    const currentDate = selectedTeacher.subscription_expires_at 
-      ? new Date(selectedTeacher.subscription_expires_at) 
-      : new Date();
-      
-    if (currentDate < new Date()) {
-      currentDate.setTime(new Date().getTime());
-    }
+  const generateCodes = async () => {
+    setIsGenerating(true);
+    const newCodes = [];
 
-    currentDate.setMonth(currentDate.getMonth() + months);
+    for (let i = 0; i < codeForm.quantity; i++) {
+      const code = `${codeForm.type.toUpperCase()}-${Math.random().toString(36).substring(2, 10).toUpperCase()}`;
 
-    try {
-      await supabase
-        .from('profiles')
-        .update({ 
-          subscription_expires_at: currentDate.toISOString(),
-          status: 'active'
-        })
-        .eq('id', selectedTeacher.id);
-      
-      toast.success("تم تجديد الاشتراك بنجاح");
-      setIsExtendModalOpen(false);
-      fetchTeachers();
-    } catch (err) {
-      toast.error("فشل في تجديد الاشتراك");
-    }
-  };
-
-  const handleDeleteTeacher = async () => {
-    if (!selectedTeacher) return;
-    
-    try {
-      // In a real app with proper RLS, you'd call an edge function or use service_role to delete the auth.user
-      // Here we just delete the profile for demo purposes if RLS allows, or rely on cascading
-      await supabase.from('profiles').delete().eq('id', selectedTeacher.id);
-      
-      toast.success("تم حذف المعلم بنجاح");
-      setIsDeleteModalOpen(false);
-      fetchTeachers();
-    } catch (err) {
-      toast.error("فشل في الحذف");
-    }
-  };
-
-  const handleAddTeacher = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const toastId = toast.loading("جاري إضافة المعلم...");
-    try {
-      // Create user auth
-      const internalEmail = `${addForm.phone}@center.app`;
-      const { data: authData, error: authError } = await supabase.auth.signUp({
-        email: internalEmail,
-        password: addForm.password,
+      const { error } = await supabase.from('subscription_codes').insert({
+        code,
+        type: codeForm.type,
+        duration_days: codeForm.duration_days,
+        status: 'unused'
       });
 
-      if (authError) throw authError;
-
-      if (authData.user) {
-        await supabase.from('profiles').upsert([{
-          id: authData.user.id,
-          role: 'teacher',
-          full_name: addForm.name,
-          subject: addForm.subject,
-          phone: addForm.phone,
-          status: 'active',
-          subscription_plan: 'basic',
-          subscription_expires_at: new Date(new Date().setMonth(new Date().getMonth() + 1)).toISOString()
-        }]);
+      if (!error) {
+        newCodes.push(code);
       }
+    }
 
-      toast.success("تم إضافة المعلم بنجاح", { id: toastId });
-      setIsAddModalOpen(false);
-      setAddForm({ name: '', phone: '', subject: '', password: '' });
-      fetchTeachers();
-    } catch (err: any) {
-      toast.error(err.message || "حدث خطأ أثناء الإضافة", { id: toastId });
+    setIsGenerating(false);
+    if (newCodes.length > 0) {
+      toast.success(`تم إنشاء ${newCodes.length} كود بنجاح`);
+      fetchCodes();
     }
   };
 
-  const fetchActivationCodes = async () => {
-    try {
-      const { data, error } = await supabase
-        .from('activation_codes')
-        .select('*')
-        .order('created_at', { ascending: false });
-        
-      if (error) throw error;
-      if (data) setActivationCodes(data);
-    } catch (err) {
-      console.error("Error fetching codes:", err);
+  const suspendTeacher = async (teacherId: string) => {
+    const { error } = await supabase
+      .from('profiles')
+      .update({ status: 'suspended' })
+      .eq('id', teacherId);
+
+    if (error) {
+      toast.error('حدث خطأ');
+      return;
     }
+
+    toast.success('تم تعليق الحساب');
+    fetchTeachers();
   };
 
-  const generateRandomCode = (months: number) => {
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
-    const randomStr = Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
-    const periodStr = months === 120 ? 'LIFE' : months === 12 ? '1Y' : months === 6 ? '6M' : '1M';
-    return `MOALEM-${periodStr}-${randomStr}`;
-  };
+  const deleteTeacher = async (teacherId: string) => {
+    if (!confirm('هل أنت متأكد من حذف هذا الحساب؟')) return;
 
-  const handleGenerateCode = async () => {
-    const code = generateRandomCode(generateCodeDuration);
+    const { error } = await supabase
+      .from('profiles')
+      .delete()
+      .eq('id', teacherId);
 
-    const toastId = toast.loading("جاري توليد الكود...");
-    try {
-      const { error } = await supabase.from('activation_codes').insert([{
-        code: code,
-        duration_months: generateCodeDuration,
-        is_used: false
-      }]);
-
-      if (error) {
-        console.error('Supabase Insert Error:', error);
-        throw error;
-      }
-
-      toast.success("تم توليد الكود بنجاح", { id: toastId });
-      setIsGenerateCodeModalOpen(false);
-      fetchActivationCodes();
-    } catch (err) {
-      console.error('Supabase Insert Error:', err);
-      toast.error("فشل في توليد الكود", { id: toastId });
+    if (error) {
+      toast.error('حدث خطأ');
+      return;
     }
+
+    toast.success('تم الحذف');
+    fetchTeachers();
   };
 
-  if (loading) {
+  const exportCodes = () => {
+    const csv = [
+      ['Code', 'Type', 'Duration Days', 'Status', 'Used By', 'Created At'].join(','),
+      ...codes.map(c => [c.code, c.type, c.duration_days, c.status, c.used_by || '', c.created_at].join(','))
+    ].join('\n');
+
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `codes-${new Date().toISOString().split('T')[0]}.csv`;
+    a.click();
+  };
+
+  const filteredTeachers = teachers.filter(teacher => {
+    const matchesSearch = teacher.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                         teacher.phone?.includes(searchQuery);
+
+    let matchesStatus = true;
+    if (filterStatus !== 'all') {
+      const now = new Date();
+      const expiresAt = teacher.subscription_expires_at ? new Date(teacher.subscription_expires_at) : null;
+
+      if (filterStatus === 'active') matchesStatus = !!(expiresAt && expiresAt > now);
+      else if (filterStatus === 'expired') matchesStatus = !expiresAt || expiresAt <= now;
+      else if (filterStatus === 'suspended') matchesStatus = teacher.status === 'suspended';
+    }
+
+    let matchesPlan = true;
+    if (filterPlan !== 'all') {
+      matchesPlan = teacher.subscription_plan === filterPlan;
+    }
+
+    return matchesSearch && matchesStatus && matchesPlan;
+  });
+
+  if (isLoading) {
     return (
-      <div className="flex h-screen items-center justify-center bg-[#0B1120]">
-        <div className="w-10 h-10 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+      <div className="flex items-center justify-center min-h-screen bg-[#0B1120]">
+        <div className="w-8 h-8 rounded-full border-2 border-indigo-500 border-t-transparent animate-spin"></div>
       </div>
     );
   }
 
-  const activeCount = teachers.filter(t => t.status === 'active' || !t.status).length;
-  const suspendedCount = teachers.filter(t => t.status === 'suspended').length;
-  const expiringSoonCount = teachers.filter(t => {
-    if (!t.subscription_expires_at) return false;
-    const daysLeft = (new Date(t.subscription_expires_at).getTime() - new Date().getTime()) / (1000 * 3600 * 24);
-    return daysLeft > 0 && daysLeft <= 7;
-  }).length;
-
-  const filteredTeachers = teachers.filter(t => 
-    (t.full_name?.includes(searchQuery) || t.phone?.includes(searchQuery))
-  );
-
   return (
-    <div className="min-h-screen bg-[#0B1120] text-white font-sans selection:bg-indigo-500/30 pb-20">
-      
-      {/* Header */}
-      <header className="sticky top-0 z-40 w-full backdrop-blur-xl bg-[#111827]/80 border-b border-gray-800">
-        <div className="container mx-auto px-4 h-20 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-red-500/10 text-red-400 border border-red-500/20">
-              <ShieldCheck className="h-6 w-6" />
-            </div>
-            <div>
-              <h1 className="text-xl font-bold text-white">لوحة تحكم الإدارة</h1>
-              <p className="text-xs text-red-400">Super Admin Access</p>
-            </div>
-          </div>
-          
-          <button 
-            onClick={() => { supabase.auth.signOut(); router.push('/'); }}
-            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-gray-800 hover:bg-gray-700 transition-colors text-sm font-medium"
-          >
-            <LogOut className="w-4 h-4" /> خروج
-          </button>
-        </div>
-      </header>
+    <div className="min-h-screen bg-[#0B1120] text-white p-4 sm:p-6 lg:p-8">
+      <div className="max-w-7xl mx-auto space-y-6">
 
-      <main className="container mx-auto px-4 py-8">
-        {/* KPI Cards */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
-          <div className="bg-[#111827] border border-gray-800 rounded-2xl p-6">
-            <div className="flex justify-between items-start mb-4">
-              <div className="p-3 bg-indigo-500/10 text-indigo-400 rounded-xl">
-                <Users className="w-6 h-6" />
-              </div>
-              <h3 className="text-3xl font-bold text-white">{teachers.length}</h3>
-            </div>
-            <p className="text-gray-400 font-medium">إجمالي المعلمين</p>
-          </div>
-          
-          <div className="bg-[#111827] border border-gray-800 rounded-2xl p-6">
-            <div className="flex justify-between items-start mb-4">
-              <div className="p-3 bg-green-500/10 text-green-400 rounded-xl">
-                <CheckCircle className="w-6 h-6" />
-              </div>
-              <h3 className="text-3xl font-bold text-white">{activeCount}</h3>
-            </div>
-            <p className="text-gray-400 font-medium">اشتراكات نشطة</p>
-          </div>
-
-          <div className="bg-[#111827] border border-gray-800 rounded-2xl p-6">
-            <div className="flex justify-between items-start mb-4">
-              <div className="p-3 bg-yellow-500/10 text-yellow-400 rounded-xl">
-                <Clock className="w-6 h-6" />
-              </div>
-              <h3 className="text-3xl font-bold text-white">{expiringSoonCount}</h3>
-            </div>
-            <p className="text-gray-400 font-medium">تنتهي خلال 7 أيام</p>
-          </div>
-
-          <div className="bg-[#111827] border border-gray-800 rounded-2xl p-6">
-            <div className="flex justify-between items-start mb-4">
-              <div className="p-3 bg-red-500/10 text-red-400 rounded-xl">
-                <Ban className="w-6 h-6" />
-              </div>
-              <h3 className="text-3xl font-bold text-white">{suspendedCount}</h3>
-            </div>
-            <p className="text-gray-400 font-medium">حسابات موقوفة</p>
-          </div>
-        </div>
-
-        {/* Teachers Table Section */}
-        <div className="bg-[#111827] border border-gray-800 rounded-3xl overflow-hidden shadow-2xl">
-          <div className="p-6 border-b border-gray-800 flex flex-col sm:flex-row gap-4 justify-between items-center bg-[#0B1120]/50">
-            <div className="relative w-full sm:w-96">
-              <Search className="absolute right-4 top-1/2 -translate-y-1/2 text-gray-500 w-5 h-5" />
-              <input 
-                type="text" 
-                placeholder="ابحث بالاسم أو رقم الهاتف..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full bg-[#111827] border border-gray-700 rounded-xl py-3 pr-12 pl-4 text-white focus:outline-none focus:border-indigo-500 transition-colors"
-              />
-            </div>
-            <div className="flex flex-col sm:flex-row gap-3 w-full sm:w-auto shrink-0">
-              <button 
-                onClick={() => setIsGenerateCodeModalOpen(true)}
-                className="w-full sm:w-auto flex items-center justify-center gap-2 px-6 py-3 bg-purple-600/10 hover:bg-purple-600/20 text-purple-400 border border-purple-500/20 rounded-xl font-bold transition-all"
+        {/* Header */}
+        <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <div>
+            <div className="flex items-center gap-3 mb-2">
+              <button
+                onClick={() => router.push('/')}
+                className="flex items-center justify-center h-10 w-10 rounded-lg bg-white/5 hover:bg-white/10 transition-colors"
               >
-                🔑 توليد كود تفعيل
+                <ArrowLeft className="h-5 w-5" />
               </button>
-              <button 
-                onClick={() => setIsAddModalOpen(true)}
-                className="w-full sm:w-auto flex items-center justify-center gap-2 px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold transition-all shadow-lg shadow-indigo-500/20"
-              >
-                <Plus className="w-5 h-5" /> معلم جديد
-              </button>
+              <div className="flex items-center gap-2">
+                <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-purple-500 to-indigo-600 shadow-lg shadow-purple-500/20">
+                  <ShieldCheck className="h-6 w-6 text-white" />
+                </div>
+                <h1 className="text-3xl font-bold">لوحة التحكم</h1>
+              </div>
             </div>
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-right">
-              <thead className="bg-[#1f2937]/50 text-gray-400 text-sm">
-                <tr>
-                  <th className="px-6 py-4 font-medium whitespace-nowrap">اسم المعلم والمادة</th>
-                  <th className="px-6 py-4 font-medium whitespace-nowrap">رقم الهاتف</th>
-                  <th className="px-6 py-4 font-medium whitespace-nowrap">حالة الاشتراك</th>
-                  <th className="px-6 py-4 font-medium whitespace-nowrap">تاريخ الانتهاء</th>
-                  <th className="px-6 py-4 font-medium whitespace-nowrap text-center">إجراءات</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-800/50 text-sm">
-                {filteredTeachers.map((teacher) => {
-                  
-                  let statusColor = "bg-green-500/10 text-green-400 border-green-500/20";
-                  let statusText = "نشط";
-                  
-                  if (teacher.status === 'suspended') {
-                    statusColor = "bg-gray-500/10 text-gray-400 border-gray-500/20";
-                    statusText = "موقوف";
-                  } else if (teacher.subscription_expires_at) {
-                    const daysLeft = (new Date(teacher.subscription_expires_at).getTime() - new Date().getTime()) / (1000 * 3600 * 24);
-                    if (daysLeft < 0) {
-                      statusColor = "bg-red-500/10 text-red-400 border-red-500/20";
-                      statusText = "منتهي";
-                    } else if (daysLeft <= 7) {
-                      statusColor = "bg-yellow-500/10 text-yellow-400 border-yellow-500/20";
-                      statusText = "قارب على الانتهاء";
-                    }
-                  }
-
-                  return (
-                    <tr key={teacher.id} className="hover:bg-white/[0.02] transition-colors group">
-                      <td className="px-6 py-4">
-                        <div className="font-bold text-white mb-1">{teacher.full_name}</div>
-                        <div className="text-xs text-gray-500">{teacher.subject || 'غير محدد'}</div>
-                      </td>
-                      <td className="px-6 py-4 font-mono text-gray-300" dir="ltr">
-                        {teacher.phone}
-                      </td>
-                      <td className="px-6 py-4">
-                        <span className={`px-3 py-1 text-xs font-bold rounded-lg border ${statusColor}`}>
-                          {statusText}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 text-gray-400">
-                        {teacher.subscription_expires_at ? new Date(teacher.subscription_expires_at).toLocaleDateString('ar-EG') : 'غير محدد'}
-                      </td>
-                      <td className="px-6 py-4 text-center">
-                        <div className="flex items-center justify-center gap-2">
-                          <button 
-                            onClick={() => { setSelectedTeacher(teacher); setIsExtendModalOpen(true); }}
-                            className="p-2 bg-indigo-500/10 text-indigo-400 rounded-lg hover:bg-indigo-500/20 transition-colors"
-                            title="تجديد الاشتراك"
-                          >
-                            <Calendar className="w-4 h-4" />
-                          </button>
-                          <button 
-                            onClick={() => handleToggleStatus(teacher)}
-                            className={`p-2 rounded-lg transition-colors ${teacher.status === 'suspended' ? 'bg-green-500/10 text-green-400 hover:bg-green-500/20' : 'bg-orange-500/10 text-orange-400 hover:bg-orange-500/20'}`}
-                            title={teacher.status === 'suspended' ? 'تفعيل' : 'إيقاف'}
-                          >
-                            <Ban className="w-4 h-4" />
-                          </button>
-                          <button 
-                            onClick={() => { setSelectedTeacher(teacher); setIsDeleteModalOpen(true); }}
-                            className="p-2 bg-red-500/10 text-red-400 rounded-lg hover:bg-red-500/20 transition-colors"
-                            title="حذف"
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })}
-                {filteredTeachers.length === 0 && (
-                  <tr>
-                    <td colSpan={5} className="px-6 py-12 text-center text-gray-500">
-                      لا يوجد معلمين مطابقين للبحث
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
+            <p className="text-gray-400 text-sm">إدارة المعلمين والاشتراكات والأكواد</p>
           </div>
         </div>
 
-        {/* Generated Codes List Section */}
-        <div className="bg-[#111827] rounded-3xl p-6 border border-gray-800 shadow-xl mt-8">
-          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
-            <div>
-              <h2 className="text-xl font-bold text-white">أكواد التفعيل المولدة</h2>
-              <p className="text-sm text-gray-400 mt-1">إدارة أكواد التفعيل التي تم توليدها</p>
-            </div>
-            <button 
-              onClick={() => fetchActivationCodes()}
-              className="text-sm font-medium text-indigo-400 hover:text-indigo-300 transition-colors"
+        {/* Tabs */}
+        <div className="flex gap-2 border-b border-gray-800 overflow-x-auto scrollbar-hide">
+          {[
+            { id: 'dashboard', label: 'لوحة المعلومات', icon: TrendingUp },
+            { id: 'teachers', label: 'المعلمين', icon: Users },
+            { id: 'codes', label: 'أكواد الاشتراك', icon: Crown }
+          ].map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id as any)}
+              className={`flex items-center gap-2 px-4 py-3 border-b-2 whitespace-nowrap transition-all ${
+                activeTab === tab.id
+                  ? 'border-indigo-500 text-indigo-400 bg-indigo-500/5'
+                  : 'border-transparent text-gray-400 hover:text-gray-300'
+              }`}
             >
-              تحديث القائمة
+              <tab.icon className="h-4 w-4" />
+              {tab.label}
             </button>
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-right">
-              <thead className="bg-[#1f2937]/50 text-gray-400 text-sm">
-                <tr>
-                  <th className="px-6 py-4 font-medium whitespace-nowrap">الكود</th>
-                  <th className="px-6 py-4 font-medium whitespace-nowrap">الباقة</th>
-                  <th className="px-6 py-4 font-medium whitespace-nowrap">المدة</th>
-                  <th className="px-6 py-4 font-medium whitespace-nowrap">الحالة</th>
-                  <th className="px-6 py-4 font-medium whitespace-nowrap">إجراءات</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-800">
-                {activationCodes.length > 0 ? (
-                  activationCodes.map((code) => (
-                    <tr key={code.id} className="hover:bg-[#1f2937]/30 transition-colors">
-                      <td className="px-6 py-4 whitespace-nowrap font-mono text-white tracking-wider">
-                        {code.code}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-gray-300">
-                        {code.plan_name || (code.duration_months === 6 ? 'ذهبية' : code.duration_months === 12 ? 'ماسية' : code.duration_months === 120 ? 'ملكية' : 'شهرية')}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-gray-300">
-                        {code.duration_months === 120 ? 'مدى الحياة' : `${code.duration_months} شهر`}
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium ${
-                          code.is_used ? 'bg-red-500/10 text-red-400 border border-red-500/20' : 'bg-green-500/10 text-green-400 border border-green-500/20'
-                        }`}>
-                          {code.is_used ? 'مُستخدم' : 'غير مُستخدم'}
-                        </span>
-                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <button 
-                          onClick={() => {
-                            navigator.clipboard.writeText(code.code);
-                            toast.success("تم نسخ الكود");
-                          }}
-                          className="text-indigo-400 hover:text-indigo-300 hover:underline text-sm font-medium"
-                        >
-                          نسخ الكود
-                        </button>
-                      </td>
-                    </tr>
-                  ))
-                ) : (
-                  <tr>
-                    <td colSpan={5} className="px-6 py-12 text-center text-gray-500">
-                      لا يوجد أكواد مولدة حتى الآن
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
+          ))}
         </div>
-      </main>
 
-      {/* Extend Subscription Modal */}
-      {isExtendModalOpen && selectedTeacher && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-[#111827] rounded-3xl w-full max-w-sm overflow-hidden shadow-2xl border border-gray-800">
-            <div className="p-6 border-b border-gray-800 bg-[#0B1120]/50 flex justify-between items-center">
-              <h3 className="font-bold text-lg">تجديد الاشتراك</h3>
-              <button onClick={() => setIsExtendModalOpen(false)} className="text-gray-500 hover:text-white transition-colors">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="p-6 space-y-4">
-              <p className="text-gray-400 text-sm">اختر مدة التجديد للمعلم <strong className="text-white">{selectedTeacher.full_name}</strong></p>
-              
-              <div className="grid grid-cols-1 gap-3">
-                <button onClick={() => handleExtendSubscription(1)} className="p-4 rounded-xl border border-indigo-500/30 bg-indigo-500/10 text-indigo-300 font-bold hover:bg-indigo-500/20 transition-colors">
-                  شهر واحد
-                </button>
-                <button onClick={() => handleExtendSubscription(6)} className="p-4 rounded-xl border border-indigo-500/30 bg-indigo-500/10 text-indigo-300 font-bold hover:bg-indigo-500/20 transition-colors">
-                  6 أشهر
-                </button>
-                <button onClick={() => handleExtendSubscription(12)} className="p-4 rounded-xl border border-indigo-500/30 bg-indigo-500/10 text-indigo-300 font-bold hover:bg-indigo-500/20 transition-colors">
-                  سنة كاملة
-                </button>
+        {/* Dashboard Tab */}
+        {activeTab === 'dashboard' && (
+          <div className="space-y-6">
+            {/* Stats Cards */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="rounded-xl border border-gray-800 bg-[#111827] p-5">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-gray-400">إجمالي المعلمين</p>
+                    <p className="text-3xl font-bold text-white mt-2">{stats.totalTeachers}</p>
+                  </div>
+                  <div className="flex h-12 w-12 items-center justify-center rounded-full bg-indigo-500/10">
+                    <Users className="h-6 w-6 text-indigo-400" />
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-gray-800 bg-[#111827] p-5">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-gray-400">اشتراكات نشطة</p>
+                    <p className="text-3xl font-bold text-white mt-2">{stats.activeSubscriptions}</p>
+                  </div>
+                  <div className="flex h-12 w-12 items-center justify-center rounded-full bg-green-500/10">
+                    <CheckCircle className="h-6 w-6 text-green-400" />
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-gray-800 bg-[#111827] p-5">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-gray-400">تسجيلات جديدة</p>
+                    <p className="text-3xl font-bold text-white mt-2">{stats.newThisMonth}</p>
+                  </div>
+                  <div className="flex h-12 w-12 items-center justify-center rounded-full bg-blue-500/10">
+                    <TrendingUp className="h-6 w-6 text-blue-400" />
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-xl border border-gray-800 bg-[#111827] p-5">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-sm text-gray-400">الإيرادات</p>
+                    <p className="text-3xl font-bold text-white mt-2">{stats.revenue} ج.م</p>
+                  </div>
+                  <div className="flex h-12 w-12 items-center justify-center rounded-full bg-yellow-500/10">
+                    <DollarSign className="h-6 w-6 text-yellow-400" />
+                  </div>
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Delete Confirmation Modal */}
-      {isDeleteModalOpen && selectedTeacher && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
-          <div className="bg-[#111827] rounded-3xl w-full max-w-sm overflow-hidden shadow-2xl border border-red-500/50">
-            <div className="p-6 border-b border-gray-800 bg-red-500/10 flex justify-between items-center">
-              <h3 className="font-bold text-lg text-red-400 flex items-center gap-2">
-                <AlertTriangle className="w-5 h-5" /> تحذير نهائي
-              </h3>
-            </div>
-            <div className="p-6 space-y-4 text-center">
-              <p className="text-gray-300">
-                هل أنت متأكد من حذف المعلم <strong className="text-white">{selectedTeacher.full_name}</strong>؟ 
-                سيؤدي هذا لحذف كافة بياناته، ولا يمكن التراجع عن هذا الإجراء.
-              </p>
-              <div className="flex gap-3 mt-6">
-                <button onClick={() => setIsDeleteModalOpen(false)} className="flex-1 py-3 bg-gray-800 text-white rounded-xl font-bold hover:bg-gray-700 transition-colors">
-                  إلغاء
-                </button>
-                <button onClick={handleDeleteTeacher} className="flex-1 py-3 bg-red-600 text-white rounded-xl font-bold hover:bg-red-700 transition-colors">
-                  نعم، احذف
-                </button>
+        {/* Teachers Tab */}
+        {activeTab === 'teachers' && (
+          <div className="space-y-4">
+            {/* Filters */}
+            <div className="flex flex-col sm:flex-row gap-3">
+              <div className="relative flex-1">
+                <Search className="absolute right-3 top-1/2 -translate-y-1/2 h-5 w-5 text-gray-500" />
+                <input
+                  type="text"
+                  placeholder="ابحث بالاسم أو رقم الهاتف..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full rounded-xl border border-gray-800 bg-[#111827] py-3 pr-11 pl-4 text-sm text-white focus:border-indigo-500 focus:outline-none"
+                />
               </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Add New Teacher Modal */}
-      {isAddModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-[#111827] rounded-3xl w-full max-w-md overflow-hidden shadow-2xl border border-gray-800">
-            <div className="p-6 border-b border-gray-800 bg-[#0B1120]/50 flex justify-between items-center">
-              <h3 className="font-bold text-lg">إضافة معلم جديد</h3>
-              <button onClick={() => setIsAddModalOpen(false)} className="text-gray-500 hover:text-white transition-colors">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <form onSubmit={handleAddTeacher} className="p-6 space-y-4">
-              <div className="space-y-1">
-                <label className="text-sm text-gray-400">الاسم بالكامل</label>
-                <input required type="text" value={addForm.name} onChange={e => setAddForm({...addForm, name: e.target.value})} className="w-full bg-[#0B1120] border border-gray-700 rounded-xl px-4 py-3 text-white focus:border-indigo-500 focus:outline-none" />
-              </div>
-              <div className="space-y-1">
-                <label className="text-sm text-gray-400">المادة الدراسية</label>
-                <input required type="text" value={addForm.subject} onChange={e => setAddForm({...addForm, subject: e.target.value})} className="w-full bg-[#0B1120] border border-gray-700 rounded-xl px-4 py-3 text-white focus:border-indigo-500 focus:outline-none" />
-              </div>
-              <div className="space-y-1">
-                <label className="text-sm text-gray-400">رقم الهاتف</label>
-                <input required type="tel" dir="ltr" value={addForm.phone} onChange={e => setAddForm({...addForm, phone: e.target.value})} className="w-full bg-[#0B1120] border border-gray-700 rounded-xl px-4 py-3 text-white focus:border-indigo-500 focus:outline-none font-mono" />
-              </div>
-              <div className="space-y-1">
-                <label className="text-sm text-gray-400">كلمة المرور الابتدائية</label>
-                <input required type="text" dir="ltr" value={addForm.password} onChange={e => setAddForm({...addForm, password: e.target.value})} className="w-full bg-[#0B1120] border border-gray-700 rounded-xl px-4 py-3 text-white focus:border-indigo-500 focus:outline-none font-mono" />
-              </div>
-              
-              <button type="submit" className="w-full py-4 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition-colors mt-6 shadow-lg shadow-indigo-500/20">
-                تسجيل وحفظ
-              </button>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {/* Generate Code Modal */}
-      {isGenerateCodeModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-          <div className="bg-[#111827] rounded-3xl w-full max-w-sm overflow-hidden shadow-2xl border border-gray-800">
-            <div className="p-6 border-b border-gray-800 bg-[#0B1120]/50 flex justify-between items-center">
-              <h3 className="font-bold text-lg flex items-center gap-2">
-                <span className="text-xl">🔑</span> توليد كود تفعيل
-              </h3>
-              <button onClick={() => setIsGenerateCodeModalOpen(false)} className="text-gray-500 hover:text-white transition-colors">
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-            <div className="p-6 space-y-4">
-              <p className="text-sm text-gray-400">اختر مدة الباقة لتوليد كود جديد</p>
-              
-              <div className="grid grid-cols-2 gap-3">
-                <button 
-                  onClick={() => setGenerateCodeDuration(1)}
-                  className={`py-3 px-4 rounded-xl text-sm font-medium transition-colors border ${generateCodeDuration === 1 ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-[#0B1120] border-gray-700 text-gray-300 hover:border-gray-500'}`}
-                >
-                  شهر واحد
-                </button>
-                <button 
-                  onClick={() => setGenerateCodeDuration(6)}
-                  className={`py-3 px-4 rounded-xl text-sm font-medium transition-colors border ${generateCodeDuration === 6 ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-[#0B1120] border-gray-700 text-gray-300 hover:border-gray-500'}`}
-                >
-                  6 أشهر
-                </button>
-                <button 
-                  onClick={() => setGenerateCodeDuration(12)}
-                  className={`py-3 px-4 rounded-xl text-sm font-medium transition-colors border ${generateCodeDuration === 12 ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-[#0B1120] border-gray-700 text-gray-300 hover:border-gray-500'}`}
-                >
-                  سنة كاملة
-                </button>
-                <button 
-                  onClick={() => setGenerateCodeDuration(120)}
-                  className={`py-3 px-4 rounded-xl text-sm font-medium transition-colors border ${generateCodeDuration === 120 ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-[#0B1120] border-gray-700 text-gray-300 hover:border-gray-500'}`}
-                >
-                  مدى الحياة
-                </button>
-              </div>
-
-              <button 
-                onClick={handleGenerateCode}
-                className="w-full py-4 mt-6 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-xl font-bold hover:opacity-90 transition-opacity shadow-lg shadow-indigo-500/25"
+              <select
+                value={filterStatus}
+                onChange={(e) => setFilterStatus(e.target.value as any)}
+                className="rounded-xl border border-gray-800 bg-[#111827] px-4 py-3 text-sm text-white focus:border-indigo-500 focus:outline-none"
               >
-                توليد الكود الآن
-              </button>
+                <option value="all">كل الحالات</option>
+                <option value="active">نشط</option>
+                <option value="expired">منتهي</option>
+                <option value="suspended">معلق</option>
+              </select>
+              <select
+                value={filterPlan}
+                onChange={(e) => setFilterPlan(e.target.value as any)}
+                className="rounded-xl border border-gray-800 bg-[#111827] px-4 py-3 text-sm text-white focus:border-indigo-500 focus:outline-none"
+              >
+                <option value="all">كل الباقات</option>
+                <option value="trial">تجريبي</option>
+                <option value="monthly">شهري</option>
+                <option value="annual">سنوي</option>
+              </select>
+            </div>
+
+            {/* Teachers Table */}
+            <div className="rounded-xl border border-gray-800 bg-[#111827] overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead className="bg-[#0B1120] border-b border-gray-800">
+                    <tr>
+                      <th className="px-4 py-3 text-right text-sm font-semibold text-gray-300">المعلم</th>
+                      <th className="px-4 py-3 text-right text-sm font-semibold text-gray-300">الهاتف</th>
+                      <th className="px-4 py-3 text-right text-sm font-semibold text-gray-300">الباقة</th>
+                      <th className="px-4 py-3 text-right text-sm font-semibold text-gray-300">الحالة</th>
+                      <th className="px-4 py-3 text-right text-sm font-semibold text-gray-300">تنتهي في</th>
+                      <th className="px-4 py-3 text-right text-sm font-semibold text-gray-300">إجراءات</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-800">
+                    {filteredTeachers.map(teacher => {
+                      const expiresAt = teacher.subscription_expires_at ? new Date(teacher.subscription_expires_at) : null;
+                      const isActive = expiresAt && expiresAt > new Date();
+
+                      return (
+                        <tr key={teacher.id} className="hover:bg-white/5 transition-colors">
+                          <td className="px-4 py-3">
+                            <div className="flex items-center gap-3">
+                              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-indigo-500/10 text-indigo-400 font-bold">
+                                {teacher.name?.charAt(0) || 'M'}
+                              </div>
+                              <span className="text-sm font-medium text-white">{teacher.name || 'معلم'}</span>
+                            </div>
+                          </td>
+                          <td className="px-4 py-3 text-sm text-gray-300">{teacher.phone || '-'}</td>
+                          <td className="px-4 py-3">
+                            <span className="inline-flex items-center rounded-full bg-purple-500/10 px-2 py-1 text-xs font-medium text-purple-400 border border-purple-500/20">
+                              {teacher.subscription_plan || 'trial'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${
+                              isActive ? 'bg-green-500/10 text-green-400 border border-green-500/20' : 'bg-red-500/10 text-red-400 border border-red-500/20'
+                            }`}>
+                              {isActive ? 'نشط' : 'منتهي'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3 text-sm text-gray-300">
+                            {expiresAt ? expiresAt.toLocaleDateString('ar-EG') : '-'}
+                          </td>
+                          <td className="px-4 py-3">
+                            <div className="flex items-center gap-2">
+                              <button
+                                onClick={() => suspendTeacher(teacher.id)}
+                                className="p-2 rounded-lg text-yellow-400 hover:bg-yellow-500/10 transition-colors"
+                                title="تعليق"
+                              >
+                                <Ban className="h-4 w-4" />
+                              </button>
+                              <button
+                                onClick={() => deleteTeacher(teacher.id)}
+                                className="p-2 rounded-lg text-red-400 hover:bg-red-500/10 transition-colors"
+                                title="حذف"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
 
+        {/* Codes Tab */}
+        {activeTab === 'codes' && (
+          <div className="space-y-6">
+            {/* Generate Form */}
+            <div className="rounded-xl border border-gray-800 bg-[#111827] p-6">
+              <h3 className="text-lg font-bold text-white mb-4">إنشاء أكواد جديدة</h3>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                <div>
+                  <label className="text-sm font-medium text-gray-300 mb-2 block">نوع الباقة</label>
+                  <select
+                    value={codeForm.type}
+                    onChange={(e) => setCodeForm({...codeForm, type: e.target.value})}
+                    className="w-full rounded-xl border border-gray-800 bg-[#0B1120] px-4 py-3 text-sm text-white focus:border-indigo-500 focus:outline-none"
+                  >
+                    <option value="trial">تجريبي (7 أيام)</option>
+                    <option value="monthly">شهري (30 يوم)</option>
+                    <option value="annual">سنوي (365 يوم)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-gray-300 mb-2 block">المدة (أيام)</label>
+                  <input
+                    type="number"
+                    value={codeForm.duration_days}
+                    onChange={(e) => setCodeForm({...codeForm, duration_days: parseInt(e.target.value)})}
+                    className="w-full rounded-xl border border-gray-800 bg-[#0B1120] px-4 py-3 text-sm text-white focus:border-indigo-500 focus:outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="text-sm font-medium text-gray-300 mb-2 block">الكمية</label>
+                  <input
+                    type="number"
+                    value={codeForm.quantity}
+                    onChange={(e) => setCodeForm({...codeForm, quantity: parseInt(e.target.value)})}
+                    className="w-full rounded-xl border border-gray-800 bg-[#0B1120] px-4 py-3 text-sm text-white focus:border-indigo-500 focus:outline-none"
+                  />
+                </div>
+              </div>
+              <div className="flex gap-3 mt-4">
+                <button
+                  onClick={generateCodes}
+                  disabled={isGenerating}
+                  className="flex items-center gap-2 rounded-xl bg-indigo-600 px-6 py-3 text-sm font-bold text-white hover:bg-indigo-700 transition-colors disabled:opacity-50"
+                >
+                  {isGenerating ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+                  {isGenerating ? 'جاري الإنشاء...' : 'إنشاء الأكواد'}
+                </button>
+                <button
+                  onClick={exportCodes}
+                  className="flex items-center gap-2 rounded-xl bg-green-600 px-6 py-3 text-sm font-bold text-white hover:bg-green-700 transition-colors"
+                >
+                  <Download className="h-4 w-4" />
+                  تصدير CSV
+                </button>
+              </div>
+            </div>
+
+            {/* Codes Table */}
+            <div className="rounded-xl border border-gray-800 bg-[#111827] overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full">
+                  <thead className="bg-[#0B1120] border-b border-gray-800">
+                    <tr>
+                      <th className="px-4 py-3 text-right text-sm font-semibold text-gray-300">الكود</th>
+                      <th className="px-4 py-3 text-right text-sm font-semibold text-gray-300">النوع</th>
+                      <th className="px-4 py-3 text-right text-sm font-semibold text-gray-300">المدة</th>
+                      <th className="px-4 py-3 text-right text-sm font-semibold text-gray-300">الحالة</th>
+                      <th className="px-4 py-3 text-right text-sm font-semibold text-gray-300">تاريخ الإنشاء</th>
+                      <th className="px-4 py-3 text-right text-sm font-semibold text-gray-300">إجراءات</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-800">
+                    {codes.map(code => (
+                      <tr key={code.id} className="hover:bg-white/5 transition-colors">
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2">
+                            <code className="text-sm font-mono text-indigo-400 bg-indigo-500/10 px-2 py-1 rounded">
+                              {code.code}
+                            </code>
+                            <button
+                              onClick={() => {
+                                navigator.clipboard.writeText(code.code);
+                                toast.success('تم النسخ');
+                              }}
+                              className="p-1 rounded text-gray-400 hover:text-white hover:bg-white/5 transition-colors"
+                            >
+                              <Copy className="h-4 w-4" />
+                            </button>
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <span className="inline-flex items-center rounded-full bg-purple-500/10 px-2 py-1 text-xs font-medium text-purple-400 border border-purple-500/20">
+                            {code.type}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-sm text-gray-300">{code.duration_days} يوم</td>
+                        <td className="px-4 py-3">
+                          <span className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${
+                            code.status === 'unused' ? 'bg-green-500/10 text-green-400 border border-green-500/20' : 'bg-gray-500/10 text-gray-400 border border-gray-500/20'
+                          }`}>
+                            {code.status === 'unused' ? 'غير مستخدم' : 'مستخدم'}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-sm text-gray-300">
+                          {new Date(code.created_at).toLocaleDateString('ar-EG')}
+                        </td>
+                        <td className="px-4 py-3">
+                          <button
+                            onClick={() => {
+                              navigator.clipboard.writeText(code.code);
+                              toast.success('تم النسخ');
+                            }}
+                            className="p-2 rounded-lg text-indigo-400 hover:bg-indigo-500/10 transition-colors"
+                            title="نسخ"
+                          >
+                            <Copy className="h-4 w-4" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
+      </div>
     </div>
   );
 }
